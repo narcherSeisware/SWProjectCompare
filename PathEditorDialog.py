@@ -38,6 +38,10 @@ class PathEditorDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "SeisWare.ico")
+        self.iconbitmap(icon_path)
+        
         self._create_widgets()
         self._show_loading_screen()
         
@@ -77,21 +81,14 @@ class PathEditorDialog(tk.Toplevel):
     def _create_widgets(self):
         """Create the dialog widgets"""
         
-        # Header
+        # Header/Toolbar combined
         header = ttk.Frame(self)
         header.pack(fill="x", padx=10, pady=10)
         
-        ttk.Label(header, text=f"Line: {self.line_name}", 
-                 font=("TkDefaultFont", 12, "bold")).pack(side="left")
+        ttk.Button(header, text="Refresh", command=self._refresh_paths).pack(side="left", padx=5)
+        ttk.Button(header, text="Clear All Changes", command=self._clear_changes).pack(side="left")
         
         ttk.Label(header, text=f"Projects: {len(self.projects_info)}").pack(side="right")
-        
-        # Toolbar
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Button(toolbar, text="Refresh", command=self._refresh_paths).pack(side="left", padx=5)
-        ttk.Button(toolbar, text="Clear All Changes", command=self._clear_changes).pack(side="left")
         
         # Global folder selector (above grid)
         folder_frame = ttk.LabelFrame(self, text="Apply Folder to All Projects", padding=10)
@@ -236,17 +233,19 @@ class PathEditorDialog(tk.Toplevel):
         self.entry_vars = {}
         
         # Header row
-        ttk.Label(self.grid_frame, text="Project Name", 
+        ttk.Label(self.grid_frame, text="Line Name", 
                  font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        ttk.Label(self.grid_frame, text="Current Path", 
+        ttk.Label(self.grid_frame, text="Project Name", 
                  font=("TkDefaultFont", 9, "bold")).grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(self.grid_frame, text="New Path", 
+        ttk.Label(self.grid_frame, text="Current Path", 
                  font=("TkDefaultFont", 9, "bold")).grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        ttk.Label(self.grid_frame, text="New Path", 
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=3, padx=5, pady=5, sticky="w")
         ttk.Label(self.grid_frame, text="", 
-                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=3, padx=5, pady=5)
+                 font=("TkDefaultFont", 9, "bold")).grid(row=0, column=4, padx=5, pady=5)
         
         ttk.Separator(self.grid_frame, orient="horizontal").grid(
-            row=1, column=0, columnspan=4, sticky="ew", pady=5)
+            row=1, column=0, columnspan=5, sticky="ew", pady=5)
         
         # Data rows
         row = 2
@@ -254,15 +253,19 @@ class PathEditorDialog(tk.Toplevel):
             project_name = proj_info['name']
             current_path = self.project_data.get(project_name, "")
             
+            # Line name (read-only)
+            ttk.Label(self.grid_frame, text=self.line_name).grid(
+                row=row, column=0, padx=5, pady=3, sticky="w")
+            
             # Project name (read-only)
             ttk.Label(self.grid_frame, text=project_name).grid(
-                row=row, column=0, padx=5, pady=3, sticky="w")
+                row=row, column=1, padx=5, pady=3, sticky="w")
             
             # Current path (read-only, allow to expand)
             display_path = current_path if len(current_path) < 70 else "..." + current_path[-67:]
             current_label = ttk.Label(self.grid_frame, text=display_path, 
                                      foreground="gray")
-            current_label.grid(row=row, column=1, padx=5, pady=3, sticky="ew")
+            current_label.grid(row=row, column=2, padx=5, pady=3, sticky="ew")
             
             # Tooltip for full path
             if current_path:
@@ -273,7 +276,7 @@ class PathEditorDialog(tk.Toplevel):
             self.entry_vars[project_name] = new_path_var  # Store for "Apply to All"
             
             entry = ttk.Entry(self.grid_frame, textvariable=new_path_var, width=60)
-            entry.grid(row=row, column=2, padx=5, pady=3, sticky="ew")
+            entry.grid(row=row, column=3, padx=5, pady=3, sticky="ew")
             
             # Track changes
             new_path_var.trace('w', 
@@ -284,15 +287,16 @@ class PathEditorDialog(tk.Toplevel):
             browse_btn = ttk.Button(self.grid_frame, text="...", width=3,
                 command=lambda pn=project_name, var=new_path_var: 
                     self._browse_file(pn, var))
-            browse_btn.grid(row=row, column=3, padx=5, pady=3)
+            browse_btn.grid(row=row, column=4, padx=5, pady=3)
             
             row += 1
         
         # Configure column weights for horizontal expansion
-        self.grid_frame.columnconfigure(0, weight=0, minsize=150)  # Project name - fixed width
-        self.grid_frame.columnconfigure(1, weight=1)  # Current path - expands
-        self.grid_frame.columnconfigure(2, weight=2)  # New path - expands more
-        self.grid_frame.columnconfigure(3, weight=0)  # Browse button - fixed width
+        self.grid_frame.columnconfigure(0, weight=0, minsize=100)  # Line name - fixed width
+        self.grid_frame.columnconfigure(1, weight=0, minsize=150)  # Project name - fixed width
+        self.grid_frame.columnconfigure(2, weight=1)  # Current path - expands
+        self.grid_frame.columnconfigure(3, weight=2)  # New path - expands more
+        self.grid_frame.columnconfigure(4, weight=0)  # Browse button - fixed width
     
     def _create_tooltip(self, widget, text):
         """Create a tooltip that shows on hover"""
