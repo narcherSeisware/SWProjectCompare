@@ -9,7 +9,21 @@ import pyodbc
 from collections import defaultdict
 from PIL import Image, ImageTk
 from SWCompare import load_project_database_paths, get_available_sql_driver
+<<<<<<< Updated upstream
 from PathEditorDialog import PathEditorDialog
+=======
+from ProjectDeletionManager import ProjectDeletionManager  # Add import at the top
+
+# Add debug output
+try:
+    from PathEditorDialog import PathEditorDialog
+    print("PathEditorDialog imported successfully")
+except Exception as e:
+    print(f"Failed to import PathEditorDialog: {e}")
+    import traceback
+    traceback.print_exc()
+    PathEditorDialog = None
+>>>>>>> Stashed changes
 
 
 class TwoListSelector(ttk.Frame):
@@ -156,9 +170,15 @@ class SelectionPage(ttk.Frame):
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", padx=10, pady=10)
         
-        self.status = tk.StringVar(value="Loading project list...")
-        ttk.Label(bottom, textvariable=self.status).pack(side="left")
+        # Left side - Project Deletion Manager button
+        ttk.Button(bottom, text="Project Deletion Manager", 
+                  command=self._open_deletion_manager).pack(side="left")
         
+        # Center - Status
+        self.status = tk.StringVar(value="Loading project list...")
+        ttk.Label(bottom, textvariable=self.status).pack(side="left", padx=20)
+        
+        # Right side - Compare button
         # Load Run icon for Compare button (1.5x larger)
         icon_dir = os.path.join(os.path.dirname(__file__), "icons")
         run_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "Run.ico")).resize((24, 24)))
@@ -213,6 +233,16 @@ class SelectionPage(ttk.Frame):
             return
         
         self.app.run_comparison(selected, self.db_info)
+    
+    def _open_deletion_manager(self):
+        """Open the Project Deletion Manager dialog"""
+        try:
+            ProjectDeletionManager(self)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open Project Deletion Manager:\n{str(e)}")
+            print(f"Project Deletion Manager error: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 class ResultsPage(ttk.Frame):
