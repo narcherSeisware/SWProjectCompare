@@ -222,6 +222,7 @@ class ResultsPage(ttk.Frame):
         self.app = app
         self.all_results = {}
         self.line_details = {}
+        self.selected_row = None
         
         # Toolbar - top row
         toolbar = ttk.Frame(self)
@@ -234,170 +235,135 @@ class ResultsPage(ttk.Frame):
         
         ttk.Button(toolbar, text="Error Log", command=app.show_error_log).pack(side="right", padx=5)
         
-        # Toolbar - bottom row for View by and Search
+        # Toolbar - bottom row for Search
         toolbar2 = ttk.Frame(self)
         toolbar2.pack(fill="x", padx=10, pady=(5, 10))
         
-        # View mode radio buttons
-        ttk.Label(toolbar2, text="View by:").pack(side="left", padx=(0, 5))
-        self.view_mode = tk.StringVar(value="line")
-        ttk.Radiobutton(toolbar2, text="Seismic Line", variable=self.view_mode, 
-                       value="line", command=self._change_view).pack(side="left")
-        ttk.Radiobutton(toolbar2, text="Project", variable=self.view_mode, 
-                       value="project", command=self._change_view).pack(side="left", padx=(5, 20))
-        
-        ttk.Label(toolbar2, text="Search:").pack(side="left", padx=(20, 5))
+        ttk.Label(toolbar2, text="Search:").pack(side="left", padx=(0, 5))
         self.filter_var = tk.StringVar()
         self.filter_var.trace('w', lambda *args: self._apply_filter())
         ttk.Entry(toolbar2, textvariable=self.filter_var, width=30).pack(side="left")
         
-        # Scrollable results area
+        # Grid display using Treeview
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True, padx=10, pady=10)
         
-        self.canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, command=self.canvas.yview)
-        self.results_frame = ttk.Frame(self.canvas)
+        # Create Treeview with columns
+        columns = ("Line Name", "Project Name", "File Path", "File Size", "Last Modified")
+        self.tree = ttk.Treeview(container, columns=columns, show="headings", height=25)
         
-        self.results_frame.bind("<Configure>", 
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        # Define column headings and widths
+        self.tree.heading("Line Name", text="Line Name")
+        self.tree.heading("Project Name", text="Project Name")
+        self.tree.heading("File Path", text="File Path")
+        self.tree.heading("File Size", text="File Size")
+        self.tree.heading("Last Modified", text="Last Modified")
         
-        self.canvas_frame = self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.tree.column("Line Name", width=120)
+        self.tree.column("Project Name", width=150)
+        self.tree.column("File Path", width=250)
+        self.tree.column("File Size", width=100)
+        self.tree.column("Last Modified", width=150)
         
-        # Bind canvas resize to update the frame width
-        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        # Add scrollbars
+        vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # Grid layout for treeview and scrollbars
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
         
-        # Mouse wheel scrolling
-        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"))
-    
-    def _on_canvas_configure(self, event):
-        """Update the width of the frame inside the canvas to match canvas width"""
-        self.canvas.itemconfig(self.canvas_frame, width=event.width)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        
+        # Bind selection event
+        self.tree.bind("<<TreeviewSelect>>", self._on_row_select)
+        
+        # Bottom frame for buttons
+        bottom_frame = ttk.Frame(self)
+        bottom_frame.pack(fill="x", padx=10, pady=10)
+        
+        # Redefine button at bottom right
+        self.redefine_btn = ttk.Button(bottom_frame, text="Redefine Selected", 
+                                       command=self._on_redefine_click, state="disabled")
+        self.redefine_btn.pack(side="right", padx=5)
     
     def display_results(self, results, line_details):
+        """Display results in grid format"""
         self.all_results = results
         self.line_details = line_details
         self.count_var.set(f"Found {len(results)} duplicate files")
         self._apply_filter()
     
-    def _change_view(self):
-        """Called when view mode radio button changes"""
-        self._apply_filter()
-    
-    def _render_results_by_line(self, results):
-        """Render results grouped by seismic line"""
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
+    def _apply_filter(self):
+        """Apply filter and populate the tree view"""
+        filter_text = self.filter_var.get().lower()
         
-        if not results:
-            ttk.Label(self.results_frame, text="No duplicates found").pack(pady=20)
+        # Clear existing items
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Build data for display
+        rows = []
+        for line_name, projects in self.all_results.items():
+            # Check if line name or any project matches filter
+            if filter_text and not (filter_text in line_name.lower() or 
+                                    any(filter_text in proj.lower() for proj in projects)):
+                continue
+            
+            details = self.line_details.get(line_name, {})
+            file_path = details.get('File Path', 'N/A')
+            file_size = details.get('File Size', 'N/A')
+            last_modified = details.get('Last Modified', 'N/A')
+            
+            # Create one row for each project that has this line
+            for project_name in sorted(projects):
+                rows.append({
+                    'line_name': line_name,
+                    'project_name': project_name,
+                    'file_path': file_path,
+                    'file_size': file_size,
+                    'last_modified': last_modified
+                })
+        
+        # Insert rows into treeview
+        for row in sorted(rows, key=lambda x: (x['line_name'], x['project_name'])):
+            self.tree.insert("", "end", values=(
+                row['line_name'],
+                row['project_name'],
+                row['file_path'],
+                row['file_size'],
+                row['last_modified']
+            ))
+        
+        # Update count
+        if filter_text:
+            unique_lines = len(set(row['line_name'] for row in rows))
+            self.count_var.set(f"Found {unique_lines} duplicate files ({len(rows)} total rows)")
+        else:
+            self.count_var.set(f"Found {len(self.all_results)} duplicate files ({len(rows)} total rows)")
+    
+    def _on_row_select(self, event):
+        """Handle row selection"""
+        selection = self.tree.selection()
+        self.selected_row = selection[0] if selection else None
+        self.redefine_btn.config(state="normal" if self.selected_row else "disabled")
+    
+    def _on_redefine_click(self):
+        """Handle redefine button click"""
+        if not self.selected_row:
             return
         
-        for filename in sorted(results.keys()):
-            projects = results[filename]
-            details = self.line_details.get(filename, {})
-            
-            def make_content(frame, fn=filename, prj=projects, det=details):
-                # Details grid
-                info_frame = ttk.Frame(frame)
-                info_frame.pack(fill="both", expand=True, pady=5)
-                
-                row = 0
-                for key, value in det.items():
-                    ttk.Label(info_frame, text=f"{key}:", font=("TkDefaultFont", 9, "bold")).grid(
-                        row=row, column=0, sticky="w", padx=5, pady=2)
-                    
-                    # Make Line Name clickable to open path editor for all projects
-                    if key == "Line Name":
-                        value_frame = ttk.Frame(info_frame)
-                        value_frame.grid(row=row, column=1, sticky="w", padx=5, pady=2)
-                        
-                        # Create a clickable label for the line name
-                        link = tk.Label(value_frame, text=value, foreground="blue", 
-                                       cursor="hand2", font=("TkDefaultFont", 9, "underline"))
-                        link.pack(side="left")
-                        link.bind("<Button-1>", lambda e, ln=fn, projects=prj: 
-                                 self._open_path_editor_multi_project(ln, projects))
-                    else:
-                        ttk.Label(info_frame, text=str(value)).grid(
-                            row=row, column=1, sticky="w", padx=5, pady=2)
-                    row += 1
-                
-                # Projects list (not clickable)
-                ttk.Label(info_frame, text="Found in:", font=("TkDefaultFont", 9, "bold")).grid(
-                    row=row, column=0, sticky="w", padx=5, pady=2)
-                projects_text = ", ".join(prj)
-                ttk.Label(info_frame, text=projects_text, wraplength=700).grid(
-                    row=row, column=1, sticky="w", padx=5, pady=2)
-            
-            panel = ExpandablePanel(self.results_frame, 
-                                   f"{filename} ({len(projects)} projects)", 
-                                   make_content)
-            panel.pack(fill="both", expand=True, pady=2, padx=5)
-    
-    def _render_results_by_project(self, results):
-        """Render results grouped by project"""
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
+        # Get the line name from the selected row
+        values = self.tree.item(self.selected_row)['values']
+        line_name = values[0]
         
-        if not results:
-            ttk.Label(self.results_frame, text="No duplicates found").pack(pady=20)
-            return
-        
-        # Invert the data structure: project -> list of lines
-        project_to_lines = defaultdict(list)
-        for line_name, projects in results.items():
-            for project in projects:
-                project_to_lines[project].append(line_name)
-        
-        for project_name in sorted(project_to_lines.keys()):
-            lines = project_to_lines[project_name]
-            
-            def make_content(frame, proj=project_name, line_list=lines):
-                # Lines list with details
-                info_frame = ttk.Frame(frame)
-                info_frame.pack(fill="both", expand=True, pady=5)
-                
-                for idx, line_name in enumerate(sorted(line_list)):
-                    # Line name - clickable to open path editor for all projects with this line
-                    line_frame = ttk.Frame(info_frame)
-                    line_frame.pack(fill="x", pady=3, padx=5)
-                    
-                    ttk.Label(line_frame, text="• ").pack(side="left")
-                    
-                    # Make line name clickable - show all projects with this line
-                    projects_with_line = self.all_results[line_name]
-                    line_link = tk.Label(line_frame, text=line_name, foreground="blue",
-                                        cursor="hand2", font=("TkDefaultFont", 9, "bold underline"))
-                    line_link.pack(side="left")
-                    line_link.bind("<Button-1>", lambda e, ln=line_name, prj_list=projects_with_line: 
-                                  self._open_path_editor_multi_project(ln, prj_list))
-                    
-                    # Show which other projects also have this line
-                    other_projects = [p for p in self.all_results[line_name] if p != proj]
-                    if other_projects:
-                        also_in = f"(also in: {', '.join(other_projects)})"
-                        ttk.Label(line_frame, text=also_in, 
-                                 font=("TkDefaultFont", 8), foreground="gray").pack(side="left", padx=10)
-                    
-                    # Line details
-                    details = self.line_details.get(line_name, {})
-                    if details:
-                        detail_frame = ttk.Frame(info_frame)
-                        detail_frame.pack(fill="x", padx=25, pady=2)
-                        
-                        detail_text = " | ".join([f"{k}: {v}" for k, v in details.items() if k != 'Line Name'])
-                        ttk.Label(detail_frame, text=detail_text, 
-                                 font=("TkDefaultFont", 8), foreground="darkblue").pack(side="left")
-            
-            panel = ExpandablePanel(self.results_frame, 
-                                   f"{project_name} ({len(lines)} duplicate lines)", 
-                                   make_content)
-            panel.pack(fill="both", expand=True, pady=2, padx=5)
+        # Get all projects that have this line
+        projects = self.all_results.get(line_name, [])
+        if projects:
+            self._open_path_editor_multi_project(line_name, projects)
     
     def _open_path_editor_multi_project(self, line_name, project_list):
         """Open the path editor dialog showing the same line across multiple projects"""
@@ -423,32 +389,7 @@ class ResultsPage(ttk.Frame):
             return
         
         PathEditorDialog(self, line_name, projects_info)
-    
-    def _apply_filter(self):
-        filter_text = self.filter_var.get().lower()
-        
-        if not filter_text:
-            filtered = self.all_results
-        else:
-            filtered = {}
-            for filename, projects in self.all_results.items():
-                # Check if filter matches the filename
-                filename_match = filter_text in filename.lower()
-                # Check if filter matches any of the project names
-                project_match = any(filter_text in proj.lower() for proj in projects)
-                
-                if filename_match or project_match:
-                    filtered[filename] = projects
-        
-        # Update count and render based on view mode
-        if self.view_mode.get() == "line":
-            self.count_var.set(f"Found {len(filtered)} duplicate files")
-            self._render_results_by_line(filtered)
-        else:
-            # Count projects that have duplicates
-            project_count = len(set(proj for projects in filtered.values() for proj in projects))
-            self.count_var.set(f"Found {len(filtered)} duplicate files across {project_count} projects")
-            self._render_results_by_project(filtered)
+
 
 
 class Application(tk.Tk):
@@ -584,7 +525,7 @@ class Application(tk.Tk):
                 continue
             
             try:
-                conn = self._connect_db(driver, encrypt, db_type, db_path, server, info['directory'])
+                conn = self._connect_db(driver, encrypt, db_type, db_path, server, proj_directory)
                 if conn:
                     cursor = conn.cursor()
                     
@@ -600,24 +541,34 @@ class Application(tk.Tk):
                         file_path = row[1]  # FileName is the actual file path
                         last_changed = row[2]
                         
-                        # Resolve %ProjDir% variable to actual path
-                        if file_path and '%ProjDir%' in file_path:
-                            if proj_directory:
-                                resolved_path = file_path.replace('%ProjDir%', proj_directory)
-                            else:
-                                # Fallback: use database directory if project directory not available
-                                db_dir = os.path.dirname(db_path)
-                                resolved_path = file_path.replace('%ProjDir%', db_dir)
-                        else:
-                            resolved_path = file_path if file_path else 'N/A'
+                        # Resolve %ProjDir% placeholder with actual project directory
+                        resolved_path = file_path
+                        if file_path and '%ProjDir%' in file_path and proj_directory:
+                            resolved_path = file_path.replace('%ProjDir%', proj_directory)
+                        
+                        # Get file size and actual last modified date from filesystem
+                        file_size = 'N/A'
+                        actual_last_modified = str(last_changed) if last_changed else 'N/A'
+                        
+                        if resolved_path and os.path.exists(resolved_path):
+                            try:
+                                file_stats = os.stat(resolved_path)
+                                # Convert bytes to MB
+                                file_size = f"{file_stats.st_size / (1024*1024):.2f} MB"
+                                # Get actual last modified date from file
+                                import datetime
+                                actual_last_modified = datetime.datetime.fromtimestamp(file_stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                            except Exception as e:
+                                print(f"Error getting file stats for {resolved_path}: {e}")
                         
                         # Use LineName as the key for comparison
                         file_to_projects[line_name].append(proj_name)
                         if line_name not in line_details:
                             line_details[line_name] = {
                                 'Line Name': line_name,
-                                'File Path': resolved_path,
-                                'Last Changed': str(last_changed) if last_changed else 'N/A'
+                                'File Path': resolved_path if resolved_path else 'N/A',
+                                'File Size': file_size,
+                                'Last Modified': actual_last_modified
                             }
                     conn.close()
                 else:
@@ -636,7 +587,6 @@ class Application(tk.Tk):
         return duplicates, line_details
     
     def _connect_db(self, driver, encrypt, db_type, db_path, server, directory):
-        """Connect to a SeisWare database"""
         if db_type == 1:  # SQL Server
             db_name = os.path.splitext(os.path.basename(db_path))[0]
             try:
@@ -683,6 +633,12 @@ class Application(tk.Tk):
         progress_window.destroy()
         self.pages[1].display_results(results, details)
         self.show_page(1)
+        
+        # Show error notification if there were errors
+        if self.error_log:
+            msg = f"{len(self.error_log)} project(s) had errors during comparison."
+            if messagebox.askyesno("Errors Occurred", f"{msg}\n\nView error log?"):
+                self.show_error_log()
 
 
 if __name__ == "__main__":
