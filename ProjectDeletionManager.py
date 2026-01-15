@@ -94,7 +94,7 @@ class ProjectDeletionManager(tk.Toplevel):
         
         # Checkbox for deleting files
         self.delete_files_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(action_frame, text="Delete files on disc", 
+        ttk.Checkbutton(action_frame, text="Delete files on disk", 
                        variable=self.delete_files_var).pack(side="left", padx=10)
         
         # Buttons

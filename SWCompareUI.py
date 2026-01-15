@@ -9,10 +9,7 @@ import pyodbc
 from collections import defaultdict
 from PIL import Image, ImageTk
 from SWCompare import load_project_database_paths, get_available_sql_driver
-<<<<<<< Updated upstream
-from PathEditorDialog import PathEditorDialog
-=======
-from ProjectDeletionManager import ProjectDeletionManager  # Add import at the top
+from ProjectDeletionManager import ProjectDeletionManager
 
 # Add debug output
 try:
@@ -23,7 +20,6 @@ except Exception as e:
     import traceback
     traceback.print_exc()
     PathEditorDialog = None
->>>>>>> Stashed changes
 
 
 class TwoListSelector(ttk.Frame):
