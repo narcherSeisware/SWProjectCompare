@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
 import sys
+import threading
 
 # Add the path to SeisWare SDK if needed
 # sys.path.append(r'C:\Program Files\Seisware\SeisWare\bin')
@@ -33,14 +34,47 @@ class PathEditorDialog(tk.Toplevel):
         self.project_data = {}  # Store current path data: {project_name: current_path}
         
         self.title(f"Edit Seismic Path - {line_name}")
-        self.geometry("1200x600")  # Increased width from 1000 to 1200
+        self.geometry("1200x600")
         
         # Make dialog modal
         self.transient(parent)
         self.grab_set()
         
         self._create_widgets()
-        self._load_line_paths()
+        self._show_loading_screen()
+        
+        # Start loading in background after a brief delay to ensure loading screen is visible
+        self.after(50, lambda: threading.Thread(target=self._load_line_paths_thread, daemon=True).start())
+    
+    def _show_loading_screen(self):
+        """Show a loading overlay while connecting to projects"""
+        # Create overlay frame
+        self.loading_frame = ttk.Frame(self)
+        self.loading_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # Semi-transparent background effect (use a light gray)
+        canvas = tk.Canvas(self.loading_frame, bg='#f0f0f0', highlightthickness=0)
+        canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
+        
+        # Center content
+        center_frame = ttk.Frame(self.loading_frame)
+        center_frame.place(relx=0.5, rely=0.5, anchor='center')
+        
+        ttk.Label(center_frame, text="Connecting to projects...", 
+                 font=("TkDefaultFont", 12, "bold")).pack(pady=(0, 20))
+        
+        self.loading_progress = ttk.Progressbar(center_frame, mode='indeterminate', length=300)
+        self.loading_progress.pack(pady=10)
+        self.loading_progress.start()
+        
+        self.loading_status = tk.StringVar(value="Initializing...")
+        ttk.Label(center_frame, textvariable=self.loading_status).pack(pady=10)
+    
+    def _hide_loading_screen(self):
+        """Hide the loading overlay"""
+        if hasattr(self, 'loading_frame'):
+            self.loading_progress.stop()
+            self.loading_frame.destroy()
     
     def _create_widgets(self):
         """Create the dialog widgets"""
@@ -58,7 +92,7 @@ class PathEditorDialog(tk.Toplevel):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", padx=10, pady=5)
         
-        ttk.Button(toolbar, text="Refresh", command=self._load_line_paths).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Refresh", command=self._refresh_paths).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Clear All Changes", command=self._clear_changes).pack(side="left")
         
         # SDK status indicator
@@ -112,13 +146,37 @@ class PathEditorDialog(tk.Toplevel):
         ttk.Button(bottom, text="Cancel", command=self.destroy).pack(side="right", padx=5)
         ttk.Button(bottom, text="Save Changes", command=self._save_changes).pack(side="right")
     
+    def _load_line_paths_thread(self):
+        """Load paths in background thread"""
+        try:
+            self._load_line_paths()
+            self.after(0, self._hide_loading_screen)
+        except Exception as e:
+            self.after(0, lambda: self._handle_load_error(str(e)))
+    
+    def _handle_load_error(self, error_msg):
+        """Handle errors during loading"""
+        self._hide_loading_screen()
+        messagebox.showerror("Loading Error", f"Failed to load paths:\n{error_msg}")
+        self.destroy()
+    
+    def _refresh_paths(self):
+        """Refresh button clicked - show loading and reload"""
+        self._show_loading_screen()
+        self.changes.clear()
+        threading.Thread(target=self._load_line_paths_thread, daemon=True).start()
+    
     def _load_line_paths(self):
         """Load current paths from database for each project"""
-        self.status_var.set("Loading paths from database...")
+        self.after(0, lambda: self.loading_status.set("Loading paths from database..."))
         self.project_data.clear()
         
-        for proj_info in self.projects_info:
+        total = len(self.projects_info)
+        for idx, proj_info in enumerate(self.projects_info, 1):
             project_name = proj_info['name']
+            
+            self.after(0, lambda p=project_name, i=idx, t=total: 
+                      self.loading_status.set(f"Loading {p} ({i}/{t})..."))
             
             try:
                 if SDK_AVAILABLE:
@@ -134,13 +192,16 @@ class PathEditorDialog(tk.Toplevel):
                 print(f"Error loading {project_name}: {e}")
                 self.project_data[project_name] = ""
         
-        self._populate_grid()
-        self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
+        self.after(0, self._populate_grid)
+        self.after(0, lambda: self.status_var.set(f"Loaded paths from {len(self.project_data)} projects"))
     
     def _load_path_with_sdk_retry(self, project_name, max_retries=2):
         """Load path using SDK with retry logic for timeout errors"""
         for attempt in range(max_retries):
             try:
+                self.after(0, lambda a=attempt, p=project_name: 
+                          self.loading_status.set(f"Connecting to {p} (attempt {a+1})..."))
+                
                 login_instance = SWconnect(project_name)
                 
                 # Get all seismic surveys
@@ -304,17 +365,21 @@ class PathEditorDialog(tk.Toplevel):
             self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
     
     def _browse_file(self, project_name, path_var):
-        """Open folder browser to select new path"""
+        """Open file browser to select new path"""
         current = path_var.get()
         initial_dir = os.path.dirname(current) if current and os.path.exists(os.path.dirname(current)) else ""
         
-        folder = filedialog.askdirectory(
-            title=f"Select folder for {project_name}",
-            initialdir=initial_dir
+        filename = filedialog.askopenfilename(
+            title=f"Select file for {project_name}",
+            initialdir=initial_dir,
+            filetypes=[
+                ("SEGY files", "*.sgy *.segy"),
+                ("All files", "*.*")
+            ]
         )
         
-        if folder:
-            path_var.set(folder)
+        if filename:
+            path_var.set(filename)
     
     def _browse_global_folder(self):
         """Open folder browser for global folder selection"""
@@ -330,7 +395,7 @@ class PathEditorDialog(tk.Toplevel):
             self.global_folder_var.set(folder)
     
     def _apply_to_all(self):
-        """Apply the global folder to all project entries"""
+        """Apply the global folder to all project entries, constructing filenames from DB fields"""
         global_folder = self.global_folder_var.get().strip()
         
         if not global_folder:
@@ -339,18 +404,84 @@ class PathEditorDialog(tk.Toplevel):
             return
         
         # Confirm action
-        msg = f"Apply folder to all {len(self.entry_vars)} projects?\n\nFolder: {global_folder}"
+        msg = f"Apply folder to all {len(self.entry_vars)} projects?\n\nFolder: {global_folder}\nFilenames will be generated as: LineID.DispType.ProcID.sgy"
         if not messagebox.askyesno("Confirm Apply to All", msg):
             return
         
-        # Apply to all entry fields
+        # Apply to all entry fields with constructed filename
         count = 0
+        errors = []
+        
         for project_name, entry_var in self.entry_vars.items():
-            entry_var.set(global_folder)
-            count += 1
+            try:
+                # Get the project info
+                proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
+                if not proj_info:
+                    errors.append(f"{project_name}: Project info not found")
+                    continue
+                
+                # Query database for LineID, DispType, and ProcID
+                filename = self._construct_filename(proj_info, global_folder)
+                
+                if filename:
+                    entry_var.set(filename)
+                    count += 1
+                else:
+                    errors.append(f"{project_name}: Failed to retrieve DB fields")
+                    
+            except Exception as e:
+                errors.append(f"{project_name}: {str(e)[:100]}")
+        
+        # Show results
+        if errors:
+            error_msg = "\n".join(errors[:10])  # Show first 10 errors
+            if len(errors) > 10:
+                error_msg += f"\n... and {len(errors) - 10} more errors"
+            messagebox.showwarning("Partial Success", 
+                f"Applied folder to {count} of {len(self.entry_vars)} project(s)\n\nErrors:\n{error_msg}")
+        else:
+            messagebox.showinfo("Success", f"Folder applied to {count} project(s)")
         
         self.status_var.set(f"Applied folder to {count} project(s)")
-        messagebox.showinfo("Success", f"Folder applied to {count} project(s)")
+    
+    def _construct_filename(self, proj_info, folder):
+        """Construct filename from database fields: folder\\LineID.DispType.ProcID.sgy"""
+        import pyodbc
+        
+        try:
+            conn = self._connect_to_db(proj_info)
+            if not conn:
+                return None
+            
+            cursor = conn.cursor()
+            
+            # Query for LineID, DispType, and ProcID for this line
+            cursor.execute("""
+                SELECT LineID, DispType, ProcID
+                FROM dbo.SeismicFile 
+                WHERE LineName = ?
+            """, self.line_name)
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                line_id = result[0] if result[0] else "Unknown"
+                disp_type = result[1] if result[1] else "Unknown"
+                proc_id = result[2] if result[2] else "Unknown"
+                
+                # Construct filename: LineID.DispType.ProcID.sgy
+                filename = f"{line_id}.{disp_type}.{proc_id}.sgy"
+                
+                # Combine with folder path
+                full_path = os.path.join(folder, filename)
+                return full_path
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"Error constructing filename: {e}")
+            return None
     
     def _clear_changes(self):
         """Clear all pending changes"""
@@ -363,7 +494,7 @@ class PathEditorDialog(tk.Toplevel):
         self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
     
     def _save_changes(self):
-        """Save path changes using SeisWare SDK or database"""
+        """Save path changes using database (SDK doesn't support volume updates)"""
         if not self.changes:
             messagebox.showinfo("No Changes", "No paths have been modified.")
             return
@@ -378,24 +509,18 @@ class PathEditorDialog(tk.Toplevel):
         
         for project_name, new_path in self.changes.items():
             try:
-                if SDK_AVAILABLE:
-                    # Use SDK to update the file path (with retry)
-                    success = self._save_with_sdk_retry(project_name, new_path)
-                    if success:
-                        success_count += 1
-                    else:
-                        errors.append(f"{project_name}: Failed to update via SDK")
+                # Find the project info
+                proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
+                if not proj_info:
+                    errors.append(f"{project_name}: Project info not found")
+                    continue
+                
+                # Use database update (with retry logic)
+                success = self._save_to_db_retry(proj_info, new_path)
+                if success:
+                    success_count += 1
                 else:
-                    # Fallback to direct database update
-                    proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
-                    if proj_info:
-                        success = self._save_to_db(proj_info, new_path)
-                        if success:
-                            success_count += 1
-                        else:
-                            errors.append(f"{project_name}: Failed to update database")
-                    else:
-                        errors.append(f"{project_name}: Project info not found")
+                    errors.append(f"{project_name}: Failed to update database")
                         
             except Exception as e:
                 errors.append(f"{project_name}: {str(e)[:100]}")
@@ -411,64 +536,41 @@ class PathEditorDialog(tk.Toplevel):
         
         # Reload data and clear changes
         self.changes.clear()
-        self._load_line_paths()
+        self._refresh_paths()
     
-    def _save_with_sdk_retry(self, project_name, new_path, max_retries=2):
-        """Save using SeisWare SDK with retry logic for timeout errors"""
-        # Note: SeismicVolumeManager does not have an Update method
-        # We need to use direct database access to update the FilePath
+    def _save_to_db_retry(self, proj_info, new_path, max_retries=2):
+        """Save to database with retry logic"""
+        import pyodbc
         
-        proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
-        if not proj_info:
-            print(f"Project info not found for {project_name}")
-            return False
-        
-        # Use database update instead of SDK
         for attempt in range(max_retries):
             try:
-                success = self._save_to_db(proj_info, new_path)
-                if success:
-                    return True
-                elif attempt < max_retries - 1:
-                    print(f"Save failed on attempt {attempt + 1} for {project_name}, retrying...")
-                    continue
-                else:
+                conn = self._connect_to_db(proj_info)
+                if not conn:
+                    if attempt < max_retries - 1:
+                        continue
                     return False
-                    
+                
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE dbo.SeismicFile 
+                    SET FileName = ? 
+                    WHERE LineName = ?
+                """, new_path, self.line_name)
+                
+                conn.commit()
+                conn.close()
+                return True
+                
             except Exception as e:
                 error_msg = str(e)
-                if "operation timed out" in error_msg.lower() and attempt < max_retries - 1:
-                    print(f"Timeout on attempt {attempt + 1} for {project_name}, retrying...")
+                if attempt < max_retries - 1:
+                    print(f"Database save attempt {attempt + 1} failed, retrying...")
                     continue
                 else:
-                    print(f"Save error for {project_name} after {attempt + 1} attempts: {e}")
+                    print(f"Database save error after {attempt + 1} attempts: {e}")
                     return False
         
         return False
-    
-    def _save_to_db(self, proj_info, new_path):
-        """Fallback method to save directly to database"""
-        import pyodbc
-        
-        try:
-            conn = self._connect_to_db(proj_info)
-            if not conn:
-                return False
-            
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE dbo.SeismicFile 
-                SET FileName = ? 
-                WHERE LineName = ?
-            """, new_path, self.line_name)
-            
-            conn.commit()
-            conn.close()
-            return True
-            
-        except Exception as e:
-            print(f"Database save error: {e}")
-            return False
     
     def _connect_to_db(self, proj_info):
         """Connect to a project database"""
