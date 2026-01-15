@@ -200,6 +200,10 @@ class PathEditorDialog(tk.Toplevel):
                         db_dir = os.path.dirname(proj_info['db_path'])
                         file_path = file_path.replace('%ProjDir%', db_dir)
                 
+                # Normalize path separators to backslashes
+                if file_path:
+                    file_path = file_path.replace('/', '\\')
+                
                 self.project_data[project_name] = file_path
                 conn.close()
                     
@@ -327,6 +331,8 @@ class PathEditorDialog(tk.Toplevel):
         )
         
         if filename:
+            # Normalize path separators to backslashes
+            filename = filename.replace('/', '\\')
             path_var.set(filename)
     
     def _browse_global_folder(self):
@@ -340,6 +346,8 @@ class PathEditorDialog(tk.Toplevel):
         )
         
         if folder:
+            # Normalize path separators to backslashes
+            folder = folder.replace('/', '\\')
             self.global_folder_var.set(folder)
     
     def _apply_to_all(self):
@@ -421,8 +429,13 @@ class PathEditorDialog(tk.Toplevel):
                 # Construct filename: LineID.DispType.ProcID.sgy
                 filename = f"{line_id}.{disp_type}.{proc_id}.sgy"
                 
-                # Combine with folder path
+                # Combine with folder path using backslashes
+                # Normalize folder path first
+                folder = folder.replace('/', '\\')
                 full_path = os.path.join(folder, filename)
+                # Ensure final path uses backslashes
+                full_path = full_path.replace('/', '\\')
+                
                 return full_path
             else:
                 return None
