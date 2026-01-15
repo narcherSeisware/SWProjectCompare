@@ -9,16 +9,7 @@ import pyodbc
 from collections import defaultdict
 from PIL import Image, ImageTk
 from SWCompare import load_project_database_paths, get_available_sql_driver
-
-# Add debug output
-try:
-    from PathEditorDialog import PathEditorDialog
-    print("PathEditorDialog imported successfully")
-except Exception as e:
-    print(f"Failed to import PathEditorDialog: {e}")
-    import traceback
-    traceback.print_exc()
-    PathEditorDialog = None
+from PathEditorDialog import PathEditorDialog
 
 
 class TwoListSelector(ttk.Frame):
@@ -173,7 +164,7 @@ class SelectionPage(ttk.Frame):
         run_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "Run.ico")).resize((24, 24)))
         compare_btn = tk.Button(bottom, image=run_img, text="Compare projects", compound="left", 
                                 command=self._compare, bg="SystemButtonFace", relief="ridge", bd=3,
-                                font=("Arial", 12), padx=15, pady=10, activebackground="lightblue")
+                                font=("Arial", 13), padx=20, pady=12, activebackground="lightblue")
         compare_btn.image = run_img  # Keep a reference to the image
         compare_btn.pack(side="right", padx=5)
         
@@ -232,6 +223,10 @@ class ResultsPage(ttk.Frame):
         self.all_results = {}
         self.line_details = {}
         self.selected_row = None
+        self.current_rows = []  # Store current displayed rows for sorting
+        self.sort_column = None  # Track which column is sorted
+        self.sort_reverse = False  # Track sort direction
+        self.sort_is_numeric = False  # Track if current sort is numeric
         
         # Toolbar - top row
         toolbar = ttk.Frame(self)
@@ -261,12 +256,12 @@ class ResultsPage(ttk.Frame):
         columns = ("Line Name", "Project Name", "File Path", "File Size", "Last Modified")
         self.tree = ttk.Treeview(container, columns=columns, show="headings", height=25)
         
-        # Define column headings and widths
-        self.tree.heading("Line Name", text="Line Name")
-        self.tree.heading("Project Name", text="Project Name")
-        self.tree.heading("File Path", text="File Path")
-        self.tree.heading("File Size", text="File Size")
-        self.tree.heading("Last Modified", text="Last Modified")
+        # Define column headings with sort commands
+        self.tree.heading("Line Name", text="Line Name", command=lambda: self._sort_by_column("Line Name", False))
+        self.tree.heading("Project Name", text="Project Name", command=lambda: self._sort_by_column("Project Name", False))
+        self.tree.heading("File Path", text="File Path", command=lambda: self._sort_by_column("File Path", False))
+        self.tree.heading("File Size", text="File Size", command=lambda: self._sort_by_column("File Size", True))
+        self.tree.heading("Last Modified", text="Last Modified", command=lambda: self._sort_by_column("Last Modified", False))
         
         self.tree.column("Line Name", width=120)
         self.tree.column("Project Name", width=150)
@@ -295,13 +290,15 @@ class ResultsPage(ttk.Frame):
         bottom_frame.pack(fill="x", padx=10, pady=10)
         
         # Redefine button at bottom right
-        self.redefine_btn = ttk.Button(bottom_frame, text="Redefine Selected", 
-                                       command=self._on_redefine_click, state="disabled")
+        self.redefine_btn = tk.Button(bottom_frame, text="Redefine Selected",
+                                       command=self._on_redefine_click, state="disabled",
+                                       bg="SystemButtonFace", relief="ridge", bd=3,
+                                       font=("Arial", 13), padx=20, pady=12, activebackground="lightblue")
         self.redefine_btn.pack(side="right", padx=5)
     
     def display_results(self, results, line_details):
         """Display results in grid format"""
-        self.all_results = results  # Store the FULL results, not filtered
+        self.all_results = results
         self.line_details = line_details
         self.count_var.set(f"Found {len(results)} duplicate files")
         self._apply_filter()
@@ -310,11 +307,7 @@ class ResultsPage(ttk.Frame):
         """Apply filter and populate the tree view"""
         filter_text = self.filter_var.get().lower()
         
-        # Clear existing items
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        
-        # Build data for display - use self.all_results which has all the data
+        # Build data for display
         rows = []
         for line_name, projects in self.all_results.items():
             # Check if line name or any project matches filter
@@ -337,8 +330,30 @@ class ResultsPage(ttk.Frame):
                     'last_modified': last_modified
                 })
         
+        # Store rows
+        self.current_rows = rows
+        
+        # Apply current sort if one exists, otherwise default sort
+        if self.sort_column:
+            self._apply_current_sort()
+        else:
+            self._display_rows(sorted(rows, key=lambda x: (x['line_name'], x['project_name'])))
+        
+        # Update count
+        if filter_text:
+            unique_lines = len(set(row['line_name'] for row in rows))
+            self.count_var.set(f"Found {unique_lines} duplicate files")
+        else:
+            self.count_var.set(f"Found {len(self.all_results)} duplicate files")
+    
+    def _display_rows(self, rows):
+        """Display rows in the treeview"""
+        # Clear existing items
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
         # Insert rows into treeview
-        for row in sorted(rows, key=lambda x: (x['line_name'], x['project_name'])):
+        for row in rows:
             self.tree.insert("", "end", values=(
                 row['line_name'],
                 row['project_name'],
@@ -346,113 +361,103 @@ class ResultsPage(ttk.Frame):
                 row['file_size'],
                 row['last_modified']
             ))
-        
-        # Update count
-        if filter_text:
-            unique_lines = len(set(row['line_name'] for row in rows))
-            self.count_var.set(f"Found {unique_lines} duplicate files ({len(rows)} total rows)")
+    
+    def _sort_by_column(self, column, is_numeric=False):
+        """Sort treeview by column. Toggle sort direction if same column clicked."""
+        # If same column clicked, reverse the sort direction
+        if self.sort_column == column:
+            self.sort_reverse = not self.sort_reverse
         else:
-            self.count_var.set(f"Found {len(self.all_results)} duplicate files ({len(rows)} total rows)")
+            self.sort_column = column
+            self.sort_reverse = False
+            self.sort_is_numeric = is_numeric
+        
+        self._apply_current_sort()
+    
+    def _apply_current_sort(self):
+        """Apply the current sort settings to current_rows"""
+        if not self.sort_column:
+            return
+        
+        # Map column names to dict keys
+        column_key_map = {
+            "Line Name": "line_name",
+            "Project Name": "project_name",
+            "File Path": "file_path",
+            "File Size": "file_size",
+            "Last Modified": "last_modified"
+        }
+        
+        key = column_key_map.get(self.sort_column, self.sort_column.lower().replace(" ", "_"))
+        
+        # Sort the rows
+        if hasattr(self, 'sort_is_numeric') and self.sort_is_numeric and self.sort_column == "File Size":
+            # Custom sort for file size - extract numeric value
+            def get_numeric_value(row):
+                file_size = row.get(key, "N/A")
+                if file_size == "N/A":
+                    return 0
+                # Extract numeric value from "X.XX MB"
+                try:
+                    return float(file_size.split()[0])
+                except:
+                    return 0
+            
+            sorted_rows = sorted(self.current_rows, key=get_numeric_value, reverse=self.sort_reverse)
+        else:
+            # Alphanumeric sort
+            sorted_rows = sorted(self.current_rows, 
+                               key=lambda x: str(x.get(key, "")).lower(),
+                               reverse=self.sort_reverse)
+        
+        self._display_rows(sorted_rows)
     
     def _on_row_select(self, event):
         """Handle row selection"""
         selection = self.tree.selection()
         self.selected_row = selection[0] if selection else None
         self.redefine_btn.config(state="normal" if self.selected_row else "disabled")
-        
-        # Debug: print what's selected
-        if self.selected_row:
-            values = self.tree.item(self.selected_row)['values']
-            print(f"Selected row values: {values}")
-            line_name = values[0]
-            print(f"Line name from selection: {line_name}")
-            print(f"Projects for this line in all_results: {self.all_results.get(line_name, [])}")
-            print(f"All keys in all_results: {list(self.all_results.keys())[:10]}")  # First 10 keys
     
     def _on_redefine_click(self):
         """Handle redefine button click"""
         if not self.selected_row:
-            print("No row selected")
-            return
-        
-        if PathEditorDialog is None:
-            messagebox.showerror("Error", "PathEditorDialog failed to import")
             return
         
         # Get the line name from the selected row
         values = self.tree.item(self.selected_row)['values']
         line_name = values[0]
         
-        print(f"Opening path editor for line: {line_name}")
-        print(f"Type of line_name: {type(line_name)}")
-        print(f"Repr of line_name: {repr(line_name)}")
-        
         # Get all projects that have this line
         projects = self.all_results.get(line_name, [])
-        print(f"Projects with this line: {projects}")
-        
-        # Debug: Check if it's a type mismatch issue
-        if not projects:
-            print("Trying to find matching keys...")
-            for key in self.all_results.keys():
-                if str(key) == str(line_name):
-                    print(f"Found matching key: {key} (type: {type(key)})")
-                    projects = self.all_results[key]
-                    break
-        
         if projects:
             self._open_path_editor_multi_project(line_name, projects)
-        else:
-            messagebox.showwarning("No Projects", f"No projects found for line: {line_name}")
-            print("No projects found for this line")
     
     def _open_path_editor_multi_project(self, line_name, project_list):
         """Open the path editor dialog showing the same line across multiple projects"""
-        print(f"_open_path_editor_multi_project called with {len(project_list)} projects")
-        
-        # Get the db_info from the selection page
-        db_info_dict = self.app.pages[0].db_info
-        print(f"db_info has {len(db_info_dict)} projects")
-        
         # Collect all database connection info for the projects
         projects_info = []
         for project_name in project_list:
-            if project_name not in db_info_dict:
-                print(f"Warning: {project_name} not found in db_info")
+            if project_name not in self.app.pages[0].db_info:
                 continue
             
-            db_info = db_info_dict[project_name]
-            driver = get_available_sql_driver()
-            
-            proj_info = {
+            db_info = self.app.pages[0].db_info[project_name]
+            projects_info.append({
                 'name': project_name,
-                'driver': driver,
-                'encrypt': "Encrypt=no;" if "18" in driver else "",
+                'driver': get_available_sql_driver(),
+                'encrypt': "Encrypt=no;" if "18" in get_available_sql_driver() else "",
                 'db_type': db_info['type'],
                 'db_path': db_info['path'],
                 'server': db_info['server'],
                 'directory': db_info.get('directory', '')
-            }
-            print(f"Added project info: {project_name}")
-            projects_info.append(proj_info)
-        
-        print(f"Total projects_info collected: {len(projects_info)}")
+            })
         
         if not projects_info:
             messagebox.showerror("Error", "No valid project database info found")
             return
         
-        try:
-            print("Creating PathEditorDialog...")
-            dialog = PathEditorDialog(self, line_name, projects_info)
-            print("PathEditorDialog created successfully")
-        except Exception as e:
-            error_msg = f"Failed to open path editor:\n{str(e)}"
-            print(error_msg)
-            messagebox.showerror("Error", error_msg)
-            import traceback
-            traceback.print_exc()
-        
+        PathEditorDialog(self, line_name, projects_info)
+
+
 
 class Application(tk.Tk):
     def __init__(self):
@@ -649,6 +654,7 @@ class Application(tk.Tk):
         return duplicates, line_details
     
     def _connect_db(self, driver, encrypt, db_type, db_path, server, directory):
+        """Connect to a SeisWare database"""
         if db_type == 1:  # SQL Server
             db_name = os.path.splitext(os.path.basename(db_path))[0]
             try:
@@ -695,12 +701,6 @@ class Application(tk.Tk):
         progress_window.destroy()
         self.pages[1].display_results(results, details)
         self.show_page(1)
-        
-        # Show error notification if there were errors
-        if self.error_log:
-            msg = f"{len(self.error_log)} project(s) had errors during comparison."
-            if messagebox.askyesno("Errors Occurred", f"{msg}\n\nView error log?"):
-                self.show_error_log()
 
 
 if __name__ == "__main__":
