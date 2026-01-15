@@ -384,7 +384,7 @@ def main():
     project_list = SWConnect.SWprojlist()
     
     print("\nSearching for duplicate seismic files across projects...")
-    duplicates = compare_seismic_files(project_list)
+    duplicates, line_details = compare_seismic_files(project_list)
     
     if duplicates:
         print(f"\nFound {len(duplicates)} duplicate file(s):\n")
