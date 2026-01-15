@@ -4,16 +4,14 @@ import os
 import sys
 import threading
 
-# Add the path to SeisWare SDK if needed
-# sys.path.append(r'C:\Program Files\Seisware\SeisWare\bin')
-
-try:
-    import SeisWare
-    from SWConnect import SWconnect
-    SDK_AVAILABLE = True
-except ImportError:
-    SDK_AVAILABLE = False
-    print("Warning: SeisWare SDK not available. Will use direct database updates.")
+# Remove SDK imports - we'll use direct database access only
+# try:
+#     import SeisWare
+#     from SWConnect import SWconnect
+#     SDK_AVAILABLE = True
+# except ImportError:
+#     SDK_AVAILABLE = False
+#     print("Warning: SeisWare SDK not available. Will use direct database updates.")
 
 
 class PathEditorDialog(tk.Toplevel):
@@ -60,7 +58,7 @@ class PathEditorDialog(tk.Toplevel):
         center_frame = ttk.Frame(self.loading_frame)
         center_frame.place(relx=0.5, rely=0.5, anchor='center')
         
-        ttk.Label(center_frame, text="Connecting to projects...", 
+        ttk.Label(center_frame, text="Loading project data...", 
                  font=("TkDefaultFont", 12, "bold")).pack(pady=(0, 20))
         
         self.loading_progress = ttk.Progressbar(center_frame, mode='indeterminate', length=300)
@@ -94,10 +92,6 @@ class PathEditorDialog(tk.Toplevel):
         
         ttk.Button(toolbar, text="Refresh", command=self._refresh_paths).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Clear All Changes", command=self._clear_changes).pack(side="left")
-        
-        # SDK status indicator
-        sdk_status = "Using SeisWare SDK" if SDK_AVAILABLE else "Using Direct DB Access"
-        ttk.Label(toolbar, text=sdk_status, foreground="green" if SDK_AVAILABLE else "orange").pack(side="right", padx=10)
         
         # Global folder selector (above grid)
         folder_frame = ttk.LabelFrame(self, text="Apply Folder to All Projects", padding=10)
@@ -168,25 +162,50 @@ class PathEditorDialog(tk.Toplevel):
     
     def _load_line_paths(self):
         """Load current paths from database for each project"""
+        import pyodbc
+        
         self.after(0, lambda: self.loading_status.set("Loading paths from database..."))
         self.project_data.clear()
         
         total = len(self.projects_info)
         for idx, proj_info in enumerate(self.projects_info, 1):
             project_name = proj_info['name']
+            proj_directory = proj_info.get('directory', '')
             
             self.after(0, lambda p=project_name, i=idx, t=total: 
                       self.loading_status.set(f"Loading {p} ({i}/{t})..."))
             
             try:
-                if SDK_AVAILABLE:
-                    # Use SDK to get the file path (with retry)
-                    file_path = self._load_path_with_sdk_retry(project_name)
-                    self.project_data[project_name] = file_path
-                else:
-                    # Fallback to direct database access
-                    file_path = self._load_path_from_db(proj_info)
-                    self.project_data[project_name] = file_path
+                conn = self._connect_to_db(proj_info)
+                if not conn:
+                    self.project_data[project_name] = ""
+                    continue
+                
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT FileName 
+                    FROM dbo.SeismicFile 
+                    WHERE LineName = ?
+                """, self.line_name)
+                
+                result = cursor.fetchone()
+                file_path = result[0] if result and result[0] else ""
+                
+                # Resolve %ProjDir% variable to actual path
+                if file_path and '%ProjDir%' in file_path:
+                    if proj_directory:
+                        file_path = file_path.replace('%ProjDir%', proj_directory)
+                    else:
+                        # Fallback: use database directory
+                        db_dir = os.path.dirname(proj_info['db_path'])
+                        file_path = file_path.replace('%ProjDir%', db_dir)
+                
+                # Normalize path separators to backslashes
+                if file_path:
+                    file_path = file_path.replace('/', '\\')
+                
+                self.project_data[project_name] = file_path
+                conn.close()
                     
             except Exception as e:
                 print(f"Error loading {project_name}: {e}")
@@ -194,73 +213,6 @@ class PathEditorDialog(tk.Toplevel):
         
         self.after(0, self._populate_grid)
         self.after(0, lambda: self.status_var.set(f"Loaded paths from {len(self.project_data)} projects"))
-    
-    def _load_path_with_sdk_retry(self, project_name, max_retries=2):
-        """Load path using SDK with retry logic for timeout errors"""
-        for attempt in range(max_retries):
-            try:
-                self.after(0, lambda a=attempt, p=project_name: 
-                          self.loading_status.set(f"Connecting to {p} (attempt {a+1})..."))
-                
-                login_instance = SWconnect(project_name)
-                
-                # Get all seismic surveys
-                surveys = SeisWare.SeismicSurveyList()
-                login_instance.SeismicSurveyManager().GetAll(surveys)
-                
-                # Find the survey with matching LineName
-                file_path = ""
-                for survey in surveys:
-                    if survey.Name() == self.line_name:
-                        # Get volumes for this survey
-                        volumes = SeisWare.SeismicVolumeList()
-                        login_instance.SeismicVolumeManager().GetAllForSeismicSurvey(survey.ID(), volumes)
-                        
-                        if volumes.size() > 0:
-                            file_path = volumes.front().FilePath()
-                        break
-                
-                del login_instance
-                return file_path
-                
-            except RuntimeError as e:
-                error_msg = str(e)
-                if "operation timed out" in error_msg.lower() and attempt < max_retries - 1:
-                    print(f"Timeout on attempt {attempt + 1} for {project_name}, retrying...")
-                    continue
-                else:
-                    print(f"Error loading {project_name} after {attempt + 1} attempts: {e}")
-                    return ""
-            except Exception as e:
-                print(f"Unexpected error loading {project_name}: {e}")
-                return ""
-        
-        return ""
-    
-    def _load_path_from_db(self, proj_info):
-        """Fallback method to load path directly from database"""
-        import pyodbc
-        
-        try:
-            conn = self._connect_to_db(proj_info)
-            if not conn:
-                return ""
-            
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT FileName 
-                FROM dbo.SeismicFile 
-                WHERE LineName = ?
-            """, self.line_name)
-            
-            result = cursor.fetchone()
-            file_path = result[0] if result and result[0] else ""
-            conn.close()
-            return file_path
-            
-        except Exception as e:
-            print(f"Database error: {e}")
-            return ""
     
     def _populate_grid(self):
         """Populate the grid with project names and path editors"""
@@ -379,6 +331,8 @@ class PathEditorDialog(tk.Toplevel):
         )
         
         if filename:
+            # Normalize path separators to backslashes
+            filename = filename.replace('/', '\\')
             path_var.set(filename)
     
     def _browse_global_folder(self):
@@ -392,6 +346,8 @@ class PathEditorDialog(tk.Toplevel):
         )
         
         if folder:
+            # Normalize path separators to backslashes
+            folder = folder.replace('/', '\\')
             self.global_folder_var.set(folder)
     
     def _apply_to_all(self):
@@ -473,8 +429,13 @@ class PathEditorDialog(tk.Toplevel):
                 # Construct filename: LineID.DispType.ProcID.sgy
                 filename = f"{line_id}.{disp_type}.{proc_id}.sgy"
                 
-                # Combine with folder path
+                # Combine with folder path using backslashes
+                # Normalize folder path first
+                folder = folder.replace('/', '\\')
                 full_path = os.path.join(folder, filename)
+                # Ensure final path uses backslashes
+                full_path = full_path.replace('/', '\\')
+                
                 return full_path
             else:
                 return None
@@ -494,7 +455,7 @@ class PathEditorDialog(tk.Toplevel):
         self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
     
     def _save_changes(self):
-        """Save path changes using database (SDK doesn't support volume updates)"""
+        """Save path changes using database"""
         if not self.changes:
             messagebox.showinfo("No Changes", "No paths have been modified.")
             return
