@@ -158,7 +158,15 @@ class SelectionPage(ttk.Frame):
         
         self.status = tk.StringVar(value="Loading project list...")
         ttk.Label(bottom, textvariable=self.status).pack(side="left")
-        ttk.Button(bottom, text="Compare", command=self._compare).pack(side="right")
+        
+        # Load Run icon for Compare button (1.5x larger)
+        icon_dir = os.path.join(os.path.dirname(__file__), "icons")
+        run_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "Run.ico")).resize((24, 24)))
+        compare_btn = tk.Button(bottom, image=run_img, text="Compare projects", compound="left", 
+                                command=self._compare, bg="SystemButtonFace", relief="ridge", bd=3,
+                                font=("Arial", 12), padx=15, pady=10, activebackground="lightblue")
+        compare_btn.image = run_img  # Keep a reference to the image
+        compare_btn.pack(side="right", padx=5)
         
         # Auto-load the default project file after widget creation
         self.after(100, self._auto_load)
@@ -215,29 +223,33 @@ class ResultsPage(ttk.Frame):
         self.all_results = {}
         self.line_details = {}
         
-        # Toolbar
+        # Toolbar - top row
         toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", padx=10, pady=10)
+        toolbar.pack(fill="x", padx=10, pady=(10, 5))
         
         ttk.Button(toolbar, text="← Back", command=lambda: app.show_page(0)).pack(side="left")
         
         self.count_var = tk.StringVar(value="No results")
         ttk.Label(toolbar, textvariable=self.count_var).pack(side="left", padx=20)
         
-        ttk.Button(toolbar, text="Error Log", command=app.show_error_log).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="Error Log", command=app.show_error_log).pack(side="right", padx=5)
+        
+        # Toolbar - bottom row for View by and Search
+        toolbar2 = ttk.Frame(self)
+        toolbar2.pack(fill="x", padx=10, pady=(5, 10))
         
         # View mode radio buttons
-        ttk.Label(toolbar, text="View by:").pack(side="left", padx=(40, 5))
+        ttk.Label(toolbar2, text="View by:").pack(side="left", padx=(0, 5))
         self.view_mode = tk.StringVar(value="line")
-        ttk.Radiobutton(toolbar, text="Seismic Line", variable=self.view_mode, 
+        ttk.Radiobutton(toolbar2, text="Seismic Line", variable=self.view_mode, 
                        value="line", command=self._change_view).pack(side="left")
-        ttk.Radiobutton(toolbar, text="Project", variable=self.view_mode, 
+        ttk.Radiobutton(toolbar2, text="Project", variable=self.view_mode, 
                        value="project", command=self._change_view).pack(side="left", padx=(5, 20))
         
-        ttk.Label(toolbar, text="Filter:").pack(side="left", padx=(20, 5))
+        ttk.Label(toolbar2, text="Search:").pack(side="left", padx=(20, 5))
         self.filter_var = tk.StringVar()
         self.filter_var.trace('w', lambda *args: self._apply_filter())
-        ttk.Entry(toolbar, textvariable=self.filter_var, width=30).pack(side="left")
+        ttk.Entry(toolbar2, textvariable=self.filter_var, width=30).pack(side="left")
         
         # Scrollable results area
         container = ttk.Frame(self)
@@ -430,12 +442,12 @@ class ResultsPage(ttk.Frame):
         
         # Update count and render based on view mode
         if self.view_mode.get() == "line":
-            self.count_var.set(f"Showing {len(filtered)} of {len(self.all_results)} duplicate files")
+            self.count_var.set(f"Found {len(filtered)} duplicate files")
             self._render_results_by_line(filtered)
         else:
             # Count projects that have duplicates
             project_count = len(set(proj for projects in filtered.values() for proj in projects))
-            self.count_var.set(f"Showing {project_count} projects with {len(filtered)} duplicate files")
+            self.count_var.set(f"Found {len(filtered)} duplicate files across {project_count} projects")
             self._render_results_by_project(filtered)
 
 
@@ -444,6 +456,10 @@ class Application(tk.Tk):
         super().__init__()
         self.title("SeisWare Project Comparison")
         self.geometry("900x700")
+        
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "SeisWare.ico")
+        self.iconbitmap(icon_path)
         
         self.error_log = []  # Store errors during comparison
         
@@ -464,6 +480,10 @@ class Application(tk.Tk):
         log_window = tk.Toplevel(self)
         log_window.title("Error Log")
         log_window.geometry("700x500")
+        
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "SeisWare.ico")
+        log_window.iconbitmap(icon_path)
         
         # Toolbar
         toolbar = ttk.Frame(log_window)
@@ -519,6 +539,11 @@ class Application(tk.Tk):
         progress = tk.Toplevel(self)
         progress.title("Comparing...")
         progress.geometry("400x100")
+        
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "SeisWare.ico")
+        progress.iconbitmap(icon_path)
+        
         ttk.Label(progress, text="Analyzing projects...").pack(pady=20)
         progress_bar = ttk.Progressbar(progress, mode='indeterminate')
         progress_bar.pack(fill="x", padx=20)
