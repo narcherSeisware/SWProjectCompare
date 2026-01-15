@@ -106,7 +106,7 @@ def compare_seismic_files(projects: List) -> Dict[str, List[str]]:
     encrypt_setting = "Encrypt=no;" if "18" in sql_driver else ""
     
     # Load database paths from XML
-    xml_path = r"C:\Users\narcher\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
+    xml_path = r"C:\Users\achin\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
     project_db_info = load_project_database_paths(xml_path)
     print(f"Loaded database info for {len(project_db_info)} projects from XML\n")
     

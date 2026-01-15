@@ -7,6 +7,7 @@ from typing import Dict, List
 import os
 import pyodbc
 from collections import defaultdict
+from PIL import Image, ImageTk
 from SWCompare import load_project_database_paths, get_available_sql_driver
 from PathEditorDialog import PathEditorDialog
 
@@ -15,6 +16,13 @@ class TwoListSelector(ttk.Frame):
     """Reusable two-list selector widget"""
     def __init__(self, parent, left_label="Available", right_label="Selected"):
         super().__init__(parent)
+        
+        # Load icon images and store as instance variables to prevent garbage collection
+        icon_dir = os.path.join(os.path.dirname(__file__), "icons")
+        self.select_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "select.ico")).resize((24, 24)))
+        self.deselect_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "deselect.ico")).resize((24, 24)))
+        self.select_all_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "selectall.ico")).resize((24, 24)))
+        self.deselect_all_img = ImageTk.PhotoImage(Image.open(os.path.join(icon_dir, "deselectall.ico")).resize((24, 24)))
         
         # Left list
         left_frame = ttk.Frame(self)
@@ -31,10 +39,10 @@ class TwoListSelector(ttk.Frame):
         # Center buttons
         btn_frame = ttk.Frame(self)
         btn_frame.pack(side="left", padx=10)
-        ttk.Button(btn_frame, text=">>", command=self.move_right, width=8).pack(pady=5)
-        ttk.Button(btn_frame, text="<<", command=self.move_left, width=8).pack(pady=5)
-        ttk.Button(btn_frame, text="All >>", command=self.move_all_right, width=8).pack(pady=5)
-        ttk.Button(btn_frame, text="<< All", command=self.move_all_left, width=8).pack(pady=5)
+        ttk.Button(btn_frame, image=self.select_img, command=self.move_right).pack(pady=5)
+        ttk.Button(btn_frame, image=self.deselect_img, command=self.move_left).pack(pady=5)
+        ttk.Button(btn_frame, image=self.select_all_img, command=self.move_all_right).pack(pady=5)
+        ttk.Button(btn_frame, image=self.deselect_all_img, command=self.move_all_left).pack(pady=5)
         
         # Right list
         right_frame = ttk.Frame(self)
@@ -131,7 +139,7 @@ class SelectionPage(ttk.Frame):
         file_group.pack(fill="x", padx=10, pady=10)
         
         self.path_var = tk.StringVar(
-            value=r"C:\Users\narcher\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
+            value=r"C:\Users\achin\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
         )
         ttk.Entry(file_group, textvariable=self.path_var, width=60).pack(side="left", padx=5)
         ttk.Button(file_group, text="Browse", command=self._browse).pack(side="left", padx=5)
