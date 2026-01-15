@@ -1,7 +1,18 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
-import pyodbc
+import sys
+
+# Add the path to SeisWare SDK if needed
+# sys.path.append(r'C:\Program Files\Seisware\SeisWare\bin')
+
+try:
+    import SeisWare
+    from SWConnect import SWconnect
+    SDK_AVAILABLE = True
+except ImportError:
+    SDK_AVAILABLE = False
+    print("Warning: SeisWare SDK not available. Will use direct database updates.")
 
 
 class PathEditorDialog(tk.Toplevel):
@@ -22,7 +33,7 @@ class PathEditorDialog(tk.Toplevel):
         self.project_data = {}  # Store current path data: {project_name: current_path}
         
         self.title(f"Edit Seismic Path - {line_name}")
-        self.geometry("1000x600")
+        self.geometry("1200x600")  # Increased width from 1000 to 1200
         
         # Make dialog modal
         self.transient(parent)
@@ -50,6 +61,19 @@ class PathEditorDialog(tk.Toplevel):
         ttk.Button(toolbar, text="Refresh", command=self._load_line_paths).pack(side="left", padx=5)
         ttk.Button(toolbar, text="Clear All Changes", command=self._clear_changes).pack(side="left")
         
+        # SDK status indicator
+        sdk_status = "Using SeisWare SDK" if SDK_AVAILABLE else "Using Direct DB Access"
+        ttk.Label(toolbar, text=sdk_status, foreground="green" if SDK_AVAILABLE else "orange").pack(side="right", padx=10)
+        
+        # Global folder selector (above grid)
+        folder_frame = ttk.LabelFrame(self, text="Apply Folder to All Projects", padding=10)
+        folder_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.global_folder_var = tk.StringVar()
+        ttk.Entry(folder_frame, textvariable=self.global_folder_var, width=60).pack(side="left", padx=5)
+        ttk.Button(folder_frame, text="...", width=3, command=self._browse_global_folder).pack(side="left", padx=5)
+        ttk.Button(folder_frame, text="Apply to All", command=self._apply_to_all).pack(side="left", padx=5)
+        
         # Grid container with scrollbar
         grid_container = ttk.Frame(self)
         grid_container.pack(fill="both", expand=True, padx=10, pady=10)
@@ -59,11 +83,17 @@ class PathEditorDialog(tk.Toplevel):
         scrollbar = ttk.Scrollbar(grid_container, orient="vertical", command=canvas.yview)
         
         self.grid_frame = ttk.Frame(canvas)
+        
+        # Bind the frame to update canvas scroll region
         self.grid_frame.bind("<Configure>", 
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         
-        canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
+        # Create window and store the window ID
+        self.canvas_window = canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Bind canvas resize to update the frame width
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self.canvas_window, width=e.width))
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -91,26 +121,15 @@ class PathEditorDialog(tk.Toplevel):
             project_name = proj_info['name']
             
             try:
-                conn = self._connect_to_db(proj_info)
-                if not conn:
-                    self.project_data[project_name] = ""
-                    continue
-                
-                cursor = conn.cursor()
-                
-                # Get current file path for this line in this project
-                cursor.execute("""
-                    SELECT FileName 
-                    FROM dbo.SeismicFile 
-                    WHERE LineName = ?
-                """, self.line_name)
-                
-                result = cursor.fetchone()
-                file_path = result[0] if result and result[0] else ""
-                self.project_data[project_name] = file_path
-                
-                conn.close()
-                
+                if SDK_AVAILABLE:
+                    # Use SDK to get the file path (with retry)
+                    file_path = self._load_path_with_sdk_retry(project_name)
+                    self.project_data[project_name] = file_path
+                else:
+                    # Fallback to direct database access
+                    file_path = self._load_path_from_db(proj_info)
+                    self.project_data[project_name] = file_path
+                    
             except Exception as e:
                 print(f"Error loading {project_name}: {e}")
                 self.project_data[project_name] = ""
@@ -118,12 +137,79 @@ class PathEditorDialog(tk.Toplevel):
         self._populate_grid()
         self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
     
+    def _load_path_with_sdk_retry(self, project_name, max_retries=2):
+        """Load path using SDK with retry logic for timeout errors"""
+        for attempt in range(max_retries):
+            try:
+                login_instance = SWconnect(project_name)
+                
+                # Get all seismic surveys
+                surveys = SeisWare.SeismicSurveyList()
+                login_instance.SeismicSurveyManager().GetAll(surveys)
+                
+                # Find the survey with matching LineName
+                file_path = ""
+                for survey in surveys:
+                    if survey.Name() == self.line_name:
+                        # Get volumes for this survey
+                        volumes = SeisWare.SeismicVolumeList()
+                        login_instance.SeismicVolumeManager().GetAllForSeismicSurvey(survey.ID(), volumes)
+                        
+                        if volumes.size() > 0:
+                            file_path = volumes.front().FilePath()
+                        break
+                
+                del login_instance
+                return file_path
+                
+            except RuntimeError as e:
+                error_msg = str(e)
+                if "operation timed out" in error_msg.lower() and attempt < max_retries - 1:
+                    print(f"Timeout on attempt {attempt + 1} for {project_name}, retrying...")
+                    continue
+                else:
+                    print(f"Error loading {project_name} after {attempt + 1} attempts: {e}")
+                    return ""
+            except Exception as e:
+                print(f"Unexpected error loading {project_name}: {e}")
+                return ""
+        
+        return ""
+    
+    def _load_path_from_db(self, proj_info):
+        """Fallback method to load path directly from database"""
+        import pyodbc
+        
+        try:
+            conn = self._connect_to_db(proj_info)
+            if not conn:
+                return ""
+            
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT FileName 
+                FROM dbo.SeismicFile 
+                WHERE LineName = ?
+            """, self.line_name)
+            
+            result = cursor.fetchone()
+            file_path = result[0] if result and result[0] else ""
+            conn.close()
+            return file_path
+            
+        except Exception as e:
+            print(f"Database error: {e}")
+            return ""
+    
     def _populate_grid(self):
         """Populate the grid with project names and path editors"""
         
         # Clear existing widgets
         for widget in self.grid_frame.winfo_children():
             widget.destroy()
+        
+        # Store entry variables for "Apply to All" functionality
+        self.entry_vars = {}
         
         # Header row
         ttk.Label(self.grid_frame, text="Project Name", 
@@ -148,11 +234,11 @@ class PathEditorDialog(tk.Toplevel):
             ttk.Label(self.grid_frame, text=project_name).grid(
                 row=row, column=0, padx=5, pady=3, sticky="w")
             
-            # Current path (read-only, truncated if too long)
-            display_path = current_path if len(current_path) < 50 else "..." + current_path[-47:]
+            # Current path (read-only, allow to expand)
+            display_path = current_path if len(current_path) < 70 else "..." + current_path[-67:]
             current_label = ttk.Label(self.grid_frame, text=display_path, 
                                      foreground="gray")
-            current_label.grid(row=row, column=1, padx=5, pady=3, sticky="w")
+            current_label.grid(row=row, column=1, padx=5, pady=3, sticky="ew")
             
             # Tooltip for full path
             if current_path:
@@ -160,7 +246,9 @@ class PathEditorDialog(tk.Toplevel):
             
             # New path entry (editable)
             new_path_var = tk.StringVar(value=self.changes.get(project_name, ""))
-            entry = ttk.Entry(self.grid_frame, textvariable=new_path_var, width=50)
+            self.entry_vars[project_name] = new_path_var  # Store for "Apply to All"
+            
+            entry = ttk.Entry(self.grid_frame, textvariable=new_path_var, width=60)
             entry.grid(row=row, column=2, padx=5, pady=3, sticky="ew")
             
             # Track changes
@@ -176,8 +264,11 @@ class PathEditorDialog(tk.Toplevel):
             
             row += 1
         
-        # Configure column weights
-        self.grid_frame.columnconfigure(2, weight=1)
+        # Configure column weights for horizontal expansion
+        self.grid_frame.columnconfigure(0, weight=0, minsize=150)  # Project name - fixed width
+        self.grid_frame.columnconfigure(1, weight=1)  # Current path - expands
+        self.grid_frame.columnconfigure(2, weight=2)  # New path - expands more
+        self.grid_frame.columnconfigure(3, weight=0)  # Browse button - fixed width
     
     def _create_tooltip(self, widget, text):
         """Create a tooltip that shows on hover"""
@@ -225,6 +316,42 @@ class PathEditorDialog(tk.Toplevel):
         if folder:
             path_var.set(folder)
     
+    def _browse_global_folder(self):
+        """Open folder browser for global folder selection"""
+        current = self.global_folder_var.get()
+        initial_dir = current if current and os.path.exists(current) else ""
+        
+        folder = filedialog.askdirectory(
+            title="Select folder to apply to all projects",
+            initialdir=initial_dir
+        )
+        
+        if folder:
+            self.global_folder_var.set(folder)
+    
+    def _apply_to_all(self):
+        """Apply the global folder to all project entries"""
+        global_folder = self.global_folder_var.get().strip()
+        
+        if not global_folder:
+            messagebox.showwarning("No Folder Selected", 
+                "Please select a folder before applying to all projects.")
+            return
+        
+        # Confirm action
+        msg = f"Apply folder to all {len(self.entry_vars)} projects?\n\nFolder: {global_folder}"
+        if not messagebox.askyesno("Confirm Apply to All", msg):
+            return
+        
+        # Apply to all entry fields
+        count = 0
+        for project_name, entry_var in self.entry_vars.items():
+            entry_var.set(global_folder)
+            count += 1
+        
+        self.status_var.set(f"Applied folder to {count} project(s)")
+        messagebox.showinfo("Success", f"Folder applied to {count} project(s)")
+    
     def _clear_changes(self):
         """Clear all pending changes"""
         if self.changes and not messagebox.askyesno("Confirm", 
@@ -236,13 +363,13 @@ class PathEditorDialog(tk.Toplevel):
         self.status_var.set(f"Loaded paths from {len(self.project_data)} projects")
     
     def _save_changes(self):
-        """Save path changes to database"""
+        """Save path changes using SeisWare SDK or database"""
         if not self.changes:
             messagebox.showinfo("No Changes", "No paths have been modified.")
             return
         
         # Confirm changes
-        msg = f"Save {len(self.changes)} path change(s) to database?"
+        msg = f"Save {len(self.changes)} path change(s)?"
         if not messagebox.askyesno("Confirm Save", msg):
             return
         
@@ -250,29 +377,26 @@ class PathEditorDialog(tk.Toplevel):
         errors = []
         
         for project_name, new_path in self.changes.items():
-            # Find the project info
-            proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
-            if not proj_info:
-                errors.append(f"{project_name}: Project info not found")
-                continue
-            
             try:
-                conn = self._connect_to_db(proj_info)
-                if not conn:
-                    errors.append(f"{project_name}: Could not connect to database")
-                    continue
-                
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE dbo.SeismicFile 
-                    SET FileName = ? 
-                    WHERE LineName = ?
-                """, new_path, self.line_name)
-                
-                conn.commit()
-                conn.close()
-                success_count += 1
-                
+                if SDK_AVAILABLE:
+                    # Use SDK to update the file path (with retry)
+                    success = self._save_with_sdk_retry(project_name, new_path)
+                    if success:
+                        success_count += 1
+                    else:
+                        errors.append(f"{project_name}: Failed to update via SDK")
+                else:
+                    # Fallback to direct database update
+                    proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
+                    if proj_info:
+                        success = self._save_to_db(proj_info, new_path)
+                        if success:
+                            success_count += 1
+                        else:
+                            errors.append(f"{project_name}: Failed to update database")
+                    else:
+                        errors.append(f"{project_name}: Project info not found")
+                        
             except Exception as e:
                 errors.append(f"{project_name}: {str(e)[:100]}")
         
@@ -289,8 +413,67 @@ class PathEditorDialog(tk.Toplevel):
         self.changes.clear()
         self._load_line_paths()
     
+    def _save_with_sdk_retry(self, project_name, new_path, max_retries=2):
+        """Save using SeisWare SDK with retry logic for timeout errors"""
+        # Note: SeismicVolumeManager does not have an Update method
+        # We need to use direct database access to update the FilePath
+        
+        proj_info = next((p for p in self.projects_info if p['name'] == project_name), None)
+        if not proj_info:
+            print(f"Project info not found for {project_name}")
+            return False
+        
+        # Use database update instead of SDK
+        for attempt in range(max_retries):
+            try:
+                success = self._save_to_db(proj_info, new_path)
+                if success:
+                    return True
+                elif attempt < max_retries - 1:
+                    print(f"Save failed on attempt {attempt + 1} for {project_name}, retrying...")
+                    continue
+                else:
+                    return False
+                    
+            except Exception as e:
+                error_msg = str(e)
+                if "operation timed out" in error_msg.lower() and attempt < max_retries - 1:
+                    print(f"Timeout on attempt {attempt + 1} for {project_name}, retrying...")
+                    continue
+                else:
+                    print(f"Save error for {project_name} after {attempt + 1} attempts: {e}")
+                    return False
+        
+        return False
+    
+    def _save_to_db(self, proj_info, new_path):
+        """Fallback method to save directly to database"""
+        import pyodbc
+        
+        try:
+            conn = self._connect_to_db(proj_info)
+            if not conn:
+                return False
+            
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE dbo.SeismicFile 
+                SET FileName = ? 
+                WHERE LineName = ?
+            """, new_path, self.line_name)
+            
+            conn.commit()
+            conn.close()
+            return True
+            
+        except Exception as e:
+            print(f"Database save error: {e}")
+            return False
+    
     def _connect_to_db(self, proj_info):
         """Connect to a project database"""
+        import pyodbc
+        
         driver = proj_info['driver']
         encrypt = proj_info['encrypt']
         db_type = proj_info['db_type']
