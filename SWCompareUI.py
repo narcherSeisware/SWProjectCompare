@@ -9,7 +9,16 @@ import pyodbc
 from collections import defaultdict
 from PIL import Image, ImageTk
 from SWCompare import load_project_database_paths, get_available_sql_driver
-from PathEditorDialog import PathEditorDialog
+
+# Add debug output
+try:
+    from PathEditorDialog import PathEditorDialog
+    print("PathEditorDialog imported successfully")
+except Exception as e:
+    print(f"Failed to import PathEditorDialog: {e}")
+    import traceback
+    traceback.print_exc()
+    PathEditorDialog = None
 
 
 class TwoListSelector(ttk.Frame):
@@ -292,7 +301,7 @@ class ResultsPage(ttk.Frame):
     
     def display_results(self, results, line_details):
         """Display results in grid format"""
-        self.all_results = results
+        self.all_results = results  # Store the FULL results, not filtered
         self.line_details = line_details
         self.count_var.set(f"Found {len(results)} duplicate files")
         self._apply_filter()
@@ -305,7 +314,7 @@ class ResultsPage(ttk.Frame):
         for item in self.tree.get_children():
             self.tree.delete(item)
         
-        # Build data for display
+        # Build data for display - use self.all_results which has all the data
         rows = []
         for line_name, projects in self.all_results.items():
             # Check if line name or any project matches filter
@@ -350,47 +359,100 @@ class ResultsPage(ttk.Frame):
         selection = self.tree.selection()
         self.selected_row = selection[0] if selection else None
         self.redefine_btn.config(state="normal" if self.selected_row else "disabled")
+        
+        # Debug: print what's selected
+        if self.selected_row:
+            values = self.tree.item(self.selected_row)['values']
+            print(f"Selected row values: {values}")
+            line_name = values[0]
+            print(f"Line name from selection: {line_name}")
+            print(f"Projects for this line in all_results: {self.all_results.get(line_name, [])}")
+            print(f"All keys in all_results: {list(self.all_results.keys())[:10]}")  # First 10 keys
     
     def _on_redefine_click(self):
         """Handle redefine button click"""
         if not self.selected_row:
+            print("No row selected")
+            return
+        
+        if PathEditorDialog is None:
+            messagebox.showerror("Error", "PathEditorDialog failed to import")
             return
         
         # Get the line name from the selected row
         values = self.tree.item(self.selected_row)['values']
         line_name = values[0]
         
+        print(f"Opening path editor for line: {line_name}")
+        print(f"Type of line_name: {type(line_name)}")
+        print(f"Repr of line_name: {repr(line_name)}")
+        
         # Get all projects that have this line
         projects = self.all_results.get(line_name, [])
+        print(f"Projects with this line: {projects}")
+        
+        # Debug: Check if it's a type mismatch issue
+        if not projects:
+            print("Trying to find matching keys...")
+            for key in self.all_results.keys():
+                if str(key) == str(line_name):
+                    print(f"Found matching key: {key} (type: {type(key)})")
+                    projects = self.all_results[key]
+                    break
+        
         if projects:
             self._open_path_editor_multi_project(line_name, projects)
+        else:
+            messagebox.showwarning("No Projects", f"No projects found for line: {line_name}")
+            print("No projects found for this line")
     
     def _open_path_editor_multi_project(self, line_name, project_list):
         """Open the path editor dialog showing the same line across multiple projects"""
+        print(f"_open_path_editor_multi_project called with {len(project_list)} projects")
+        
+        # Get the db_info from the selection page
+        db_info_dict = self.app.pages[0].db_info
+        print(f"db_info has {len(db_info_dict)} projects")
+        
         # Collect all database connection info for the projects
         projects_info = []
         for project_name in project_list:
-            if project_name not in self.app.pages[0].db_info:
+            if project_name not in db_info_dict:
+                print(f"Warning: {project_name} not found in db_info")
                 continue
             
-            db_info = self.app.pages[0].db_info[project_name]
-            projects_info.append({
+            db_info = db_info_dict[project_name]
+            driver = get_available_sql_driver()
+            
+            proj_info = {
                 'name': project_name,
-                'driver': get_available_sql_driver(),
-                'encrypt': "Encrypt=no;" if "18" in get_available_sql_driver() else "",
+                'driver': driver,
+                'encrypt': "Encrypt=no;" if "18" in driver else "",
                 'db_type': db_info['type'],
                 'db_path': db_info['path'],
                 'server': db_info['server'],
                 'directory': db_info.get('directory', '')
-            })
+            }
+            print(f"Added project info: {project_name}")
+            projects_info.append(proj_info)
+        
+        print(f"Total projects_info collected: {len(projects_info)}")
         
         if not projects_info:
             messagebox.showerror("Error", "No valid project database info found")
             return
         
-        PathEditorDialog(self, line_name, projects_info)
-
-
+        try:
+            print("Creating PathEditorDialog...")
+            dialog = PathEditorDialog(self, line_name, projects_info)
+            print("PathEditorDialog created successfully")
+        except Exception as e:
+            error_msg = f"Failed to open path editor:\n{str(e)}"
+            print(error_msg)
+            messagebox.showerror("Error", error_msg)
+            import traceback
+            traceback.print_exc()
+        
 
 class Application(tk.Tk):
     def __init__(self):

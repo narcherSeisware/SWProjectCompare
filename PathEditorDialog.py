@@ -182,11 +182,22 @@ class PathEditorDialog(tk.Toplevel):
                     continue
                 
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT FileName 
-                    FROM dbo.SeismicFile 
-                    WHERE LineName = ?
-                """, self.line_name)
+                
+                # Try querying with LineName as-is first (string comparison)
+                # Then fall back to CAST if that fails
+                try:
+                    cursor.execute("""
+                        SELECT FileName 
+                        FROM dbo.SeismicFile 
+                        WHERE CAST(LineName AS NVARCHAR(MAX)) = ?
+                    """, str(self.line_name))
+                except:
+                    # If CAST fails, try direct comparison
+                    cursor.execute("""
+                        SELECT FileName 
+                        FROM dbo.SeismicFile 
+                        WHERE LineName = ?
+                    """, self.line_name)
                 
                 result = cursor.fetchone()
                 file_path = result[0] if result and result[0] else ""
@@ -412,11 +423,20 @@ class PathEditorDialog(tk.Toplevel):
             cursor = conn.cursor()
             
             # Query for LineID, DispType, and ProcID for this line
-            cursor.execute("""
-                SELECT LineID, DispType, ProcID
-                FROM dbo.SeismicFile 
-                WHERE LineName = ?
-            """, self.line_name)
+            # Use CAST to handle both INT and VARCHAR LineName types
+            try:
+                cursor.execute("""
+                    SELECT LineID, DispType, ProcID
+                    FROM dbo.SeismicFile 
+                    WHERE CAST(LineName AS NVARCHAR(MAX)) = ?
+                """, str(self.line_name))
+            except:
+                # If CAST fails, try direct comparison
+                cursor.execute("""
+                    SELECT LineID, DispType, ProcID
+                    FROM dbo.SeismicFile 
+                    WHERE LineName = ?
+                """, self.line_name)
             
             result = cursor.fetchone()
             conn.close()
@@ -513,11 +533,21 @@ class PathEditorDialog(tk.Toplevel):
                     return False
                 
                 cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE dbo.SeismicFile 
-                    SET FileName = ? 
-                    WHERE LineName = ?
-                """, new_path, self.line_name)
+                
+                # Use CAST to handle both INT and VARCHAR LineName types
+                try:
+                    cursor.execute("""
+                        UPDATE dbo.SeismicFile 
+                        SET FileName = ? 
+                        WHERE CAST(LineName AS NVARCHAR(MAX)) = ?
+                    """, new_path, str(self.line_name))
+                except:
+                    # If CAST fails, try direct comparison
+                    cursor.execute("""
+                        UPDATE dbo.SeismicFile 
+                        SET FileName = ? 
+                        WHERE LineName = ?
+                    """, new_path, self.line_name)
                 
                 conn.commit()
                 conn.close()
