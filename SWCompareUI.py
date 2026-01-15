@@ -574,6 +574,7 @@ class Application(tk.Tk):
             db_path = info['path']
             server = info['server']
             db_type = info['type']
+            proj_directory = info.get('directory', '')
             
             if not db_path:
                 self.error_log.append({
@@ -599,12 +600,23 @@ class Application(tk.Tk):
                         file_path = row[1]  # FileName is the actual file path
                         last_changed = row[2]
                         
+                        # Resolve %ProjDir% variable to actual path
+                        if file_path and '%ProjDir%' in file_path:
+                            if proj_directory:
+                                resolved_path = file_path.replace('%ProjDir%', proj_directory)
+                            else:
+                                # Fallback: use database directory if project directory not available
+                                db_dir = os.path.dirname(db_path)
+                                resolved_path = file_path.replace('%ProjDir%', db_dir)
+                        else:
+                            resolved_path = file_path if file_path else 'N/A'
+                        
                         # Use LineName as the key for comparison
                         file_to_projects[line_name].append(proj_name)
                         if line_name not in line_details:
                             line_details[line_name] = {
                                 'Line Name': line_name,
-                                'File Path': file_path if file_path else 'N/A',
+                                'File Path': resolved_path,
                                 'Last Changed': str(last_changed) if last_changed else 'N/A'
                             }
                     conn.close()
@@ -624,6 +636,7 @@ class Application(tk.Tk):
         return duplicates, line_details
     
     def _connect_db(self, driver, encrypt, db_type, db_path, server, directory):
+        """Connect to a SeisWare database"""
         if db_type == 1:  # SQL Server
             db_name = os.path.splitext(os.path.basename(db_path))[0]
             try:
@@ -670,12 +683,6 @@ class Application(tk.Tk):
         progress_window.destroy()
         self.pages[1].display_results(results, details)
         self.show_page(1)
-        
-        # Show error notification if there were errors
-        if self.error_log:
-            msg = f"{len(self.error_log)} project(s) had errors during comparison."
-            if messagebox.askyesno("Errors Occurred", f"{msg}\n\nView error log?"):
-                self.show_error_log()
 
 
 if __name__ == "__main__":
