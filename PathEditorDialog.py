@@ -422,9 +422,10 @@ class PathEditorDialog(tk.Toplevel):
             conn.close()
             
             if result:
-                line_id = result[0] if result[0] else "Unknown"
-                disp_type = result[1] if result[1] else "Unknown"
-                proc_id = result[2] if result[2] else "Unknown"
+                # Use "Unknown" only if value is None, not for 0 or empty string
+                line_id = result[0] if result[0] is not None else "Unknown"
+                disp_type = result[1] if result[1] is not None else "Unknown"
+                proc_id = result[2] if result[2] is not None else "Unknown"
                 
                 # Construct filename: LineID.DispType.ProcID.sgy
                 filename = f"{line_id}.{disp_type}.{proc_id}.sgy"
