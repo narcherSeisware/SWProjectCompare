@@ -138,9 +138,9 @@ class SelectionPage(ttk.Frame):
         file_group = ttk.LabelFrame(self, text="SeisWare Project List", padding=10)
         file_group.pack(fill="x", padx=10, pady=10)
         
-        self.path_var = tk.StringVar(
-            value=r"C:\Users\achin\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
-        )
+        username = os.getenv('USERNAME')
+        default_path = rf"C:\Users\{username}\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
+        self.path_var = tk.StringVar(value=default_path)
         ttk.Entry(file_group, textvariable=self.path_var, width=60).pack(side="left", padx=5)
         ttk.Button(file_group, text="Browse", command=self._browse).pack(side="left", padx=5)
         ttk.Button(file_group, text="Load", command=self._load).pack(side="left")

@@ -105,8 +105,9 @@ def compare_seismic_files(projects: List) -> Dict[str, List[str]]:
     # Add encryption settings for ODBC Driver 18
     encrypt_setting = "Encrypt=no;" if "18" in sql_driver else ""
     
-    # Load database paths from XML
-    xml_path = r"C:\Users\achin\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
+    # Load database paths from XML - path is dynamic based on current user
+    username = os.getenv('USERNAME')
+    xml_path = rf"C:\Users\{username}\AppData\Roaming\SeisWare\SeisWare\Support\ProjectList.xml"
     project_db_info = load_project_database_paths(xml_path)
     print(f"Loaded database info for {len(project_db_info)} projects from XML\n")
     
