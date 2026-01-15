@@ -8,6 +8,7 @@ import os
 import pyodbc
 from collections import defaultdict
 from SWCompare import load_project_database_paths, get_available_sql_driver
+from PathEditorDialog import PathEditorDialog
 
 
 class TwoListSelector(ttk.Frame):
@@ -100,7 +101,7 @@ class ExpandablePanel(ttk.Frame):
         self.toggle_btn = ttk.Button(header, text="▶", width=3, command=self.toggle)
         self.toggle_btn.pack(side="left", padx=5)
         
-        ttk.Label(header, text=title, font=("TkDefaultFont", 10, "bold")).pack(side="left", padx=5)
+        ttk.Label(header, text=title, font=("TkDefaultFont", 10, "bold")).pack(side="left", padx=5, fill="x", expand=True)
         
         # Content frame (initially hidden)
         self.content_frame = ttk.Frame(self)
@@ -111,7 +112,7 @@ class ExpandablePanel(ttk.Frame):
             self.toggle_btn.config(text="▶")
             self.expanded = False
         else:
-            self.content_frame.pack(fill="x", padx=20, pady=5)
+            self.content_frame.pack(fill="both", expand=True, padx=20, pady=5)
             if not self.content_frame.winfo_children():
                 self.content_builder(self.content_frame)
             self.toggle_btn.config(text="▼")
@@ -147,9 +148,26 @@ class SelectionPage(ttk.Frame):
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", padx=10, pady=10)
         
-        self.status = tk.StringVar(value="Load project list to start")
+        self.status = tk.StringVar(value="Loading project list...")
         ttk.Label(bottom, textvariable=self.status).pack(side="left")
         ttk.Button(bottom, text="Compare", command=self._compare).pack(side="right")
+        
+        # Auto-load the default project file after widget creation
+        self.after(100, self._auto_load)
+    
+    def _auto_load(self):
+        """Automatically load the default project file on startup"""
+        path = self.path_var.get()
+        if os.path.exists(path):
+            try:
+                self.db_info = load_project_database_paths(path)
+                self.selector.set_left_items(self.db_info.keys())
+                self.status.set(f"Loaded {len(self.db_info)} projects")
+            except Exception as e:
+                self.status.set(f"Failed to auto-load: {str(e)[:50]}")
+                print(f"Auto-load error: {e}")
+        else:
+            self.status.set("Default project file not found - click Load to select")
     
     def _browse(self):
         path = filedialog.askopenfilename(
@@ -187,6 +205,7 @@ class ResultsPage(ttk.Frame):
         super().__init__(parent)
         self.app = app
         self.all_results = {}
+        self.line_details = {}
         
         # Toolbar
         toolbar = ttk.Frame(self)
@@ -199,7 +218,15 @@ class ResultsPage(ttk.Frame):
         
         ttk.Button(toolbar, text="Error Log", command=app.show_error_log).pack(side="left", padx=5)
         
-        ttk.Label(toolbar, text="Filter:").pack(side="left", padx=(40, 5))
+        # View mode radio buttons
+        ttk.Label(toolbar, text="View by:").pack(side="left", padx=(40, 5))
+        self.view_mode = tk.StringVar(value="line")
+        ttk.Radiobutton(toolbar, text="Seismic Line", variable=self.view_mode, 
+                       value="line", command=self._change_view).pack(side="left")
+        ttk.Radiobutton(toolbar, text="Project", variable=self.view_mode, 
+                       value="project", command=self._change_view).pack(side="left", padx=(5, 20))
+        
+        ttk.Label(toolbar, text="Filter:").pack(side="left", padx=(20, 5))
         self.filter_var = tk.StringVar()
         self.filter_var.trace('w', lambda *args: self._apply_filter())
         ttk.Entry(toolbar, textvariable=self.filter_var, width=30).pack(side="left")
@@ -208,29 +235,41 @@ class ResultsPage(ttk.Frame):
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True, padx=10, pady=10)
         
-        canvas = tk.Canvas(container)
-        scrollbar = ttk.Scrollbar(container, command=canvas.yview)
-        self.results_frame = ttk.Frame(canvas)
+        self.canvas = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, command=self.canvas.yview)
+        self.results_frame = ttk.Frame(self.canvas)
         
         self.results_frame.bind("<Configure>", 
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         
-        canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas_frame = self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
         
-        canvas.pack(side="left", fill="both", expand=True)
+        # Bind canvas resize to update the frame width
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        
+        self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
         # Mouse wheel scrolling
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+    
+    def _on_canvas_configure(self, event):
+        """Update the width of the frame inside the canvas to match canvas width"""
+        self.canvas.itemconfig(self.canvas_frame, width=event.width)
     
     def display_results(self, results, line_details):
         self.all_results = results
         self.line_details = line_details
         self.count_var.set(f"Found {len(results)} duplicate files")
-        self._render_results(results)
+        self._apply_filter()
     
-    def _render_results(self, results):
+    def _change_view(self):
+        """Called when view mode radio button changes"""
+        self._apply_filter()
+    
+    def _render_results_by_line(self, results):
+        """Render results grouped by seismic line"""
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         
@@ -245,30 +284,129 @@ class ResultsPage(ttk.Frame):
             def make_content(frame, fn=filename, prj=projects, det=details):
                 # Details grid
                 info_frame = ttk.Frame(frame)
-                info_frame.pack(fill="x", pady=5)
+                info_frame.pack(fill="both", expand=True, pady=5)
                 
                 row = 0
                 for key, value in det.items():
                     ttk.Label(info_frame, text=f"{key}:", font=("TkDefaultFont", 9, "bold")).grid(
                         row=row, column=0, sticky="w", padx=5, pady=2)
-                    ttk.Label(info_frame, text=str(value)).grid(
-                        row=row, column=1, sticky="w", padx=5, pady=2)
+                    
+                    # Make Line Name clickable to open path editor for all projects
+                    if key == "Line Name":
+                        value_frame = ttk.Frame(info_frame)
+                        value_frame.grid(row=row, column=1, sticky="w", padx=5, pady=2)
+                        
+                        # Create a clickable label for the line name
+                        link = tk.Label(value_frame, text=value, foreground="blue", 
+                                       cursor="hand2", font=("TkDefaultFont", 9, "underline"))
+                        link.pack(side="left")
+                        link.bind("<Button-1>", lambda e, ln=fn, projects=prj: 
+                                 self._open_path_editor_multi_project(ln, projects))
+                    else:
+                        ttk.Label(info_frame, text=str(value)).grid(
+                            row=row, column=1, sticky="w", padx=5, pady=2)
                     row += 1
                 
-                # Projects list
+                # Projects list (not clickable)
                 ttk.Label(info_frame, text="Found in:", font=("TkDefaultFont", 9, "bold")).grid(
                     row=row, column=0, sticky="w", padx=5, pady=2)
                 projects_text = ", ".join(prj)
-                ttk.Label(info_frame, text=projects_text, wraplength=600).grid(
+                ttk.Label(info_frame, text=projects_text, wraplength=700).grid(
                     row=row, column=1, sticky="w", padx=5, pady=2)
             
             panel = ExpandablePanel(self.results_frame, 
                                    f"{filename} ({len(projects)} projects)", 
                                    make_content)
-            panel.pack(fill="x", pady=2)
+            panel.pack(fill="both", expand=True, pady=2, padx=5)
+    
+    def _render_results_by_project(self, results):
+        """Render results grouped by project"""
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+        
+        if not results:
+            ttk.Label(self.results_frame, text="No duplicates found").pack(pady=20)
+            return
+        
+        # Invert the data structure: project -> list of lines
+        project_to_lines = defaultdict(list)
+        for line_name, projects in results.items():
+            for project in projects:
+                project_to_lines[project].append(line_name)
+        
+        for project_name in sorted(project_to_lines.keys()):
+            lines = project_to_lines[project_name]
+            
+            def make_content(frame, proj=project_name, line_list=lines):
+                # Lines list with details
+                info_frame = ttk.Frame(frame)
+                info_frame.pack(fill="both", expand=True, pady=5)
+                
+                for idx, line_name in enumerate(sorted(line_list)):
+                    # Line name - clickable to open path editor for all projects with this line
+                    line_frame = ttk.Frame(info_frame)
+                    line_frame.pack(fill="x", pady=3, padx=5)
+                    
+                    ttk.Label(line_frame, text="• ").pack(side="left")
+                    
+                    # Make line name clickable - show all projects with this line
+                    projects_with_line = self.all_results[line_name]
+                    line_link = tk.Label(line_frame, text=line_name, foreground="blue",
+                                        cursor="hand2", font=("TkDefaultFont", 9, "bold underline"))
+                    line_link.pack(side="left")
+                    line_link.bind("<Button-1>", lambda e, ln=line_name, prj_list=projects_with_line: 
+                                  self._open_path_editor_multi_project(ln, prj_list))
+                    
+                    # Show which other projects also have this line
+                    other_projects = [p for p in self.all_results[line_name] if p != proj]
+                    if other_projects:
+                        also_in = f"(also in: {', '.join(other_projects)})"
+                        ttk.Label(line_frame, text=also_in, 
+                                 font=("TkDefaultFont", 8), foreground="gray").pack(side="left", padx=10)
+                    
+                    # Line details
+                    details = self.line_details.get(line_name, {})
+                    if details:
+                        detail_frame = ttk.Frame(info_frame)
+                        detail_frame.pack(fill="x", padx=25, pady=2)
+                        
+                        detail_text = " | ".join([f"{k}: {v}" for k, v in details.items() if k != 'Line Name'])
+                        ttk.Label(detail_frame, text=detail_text, 
+                                 font=("TkDefaultFont", 8), foreground="darkblue").pack(side="left")
+            
+            panel = ExpandablePanel(self.results_frame, 
+                                   f"{project_name} ({len(lines)} duplicate lines)", 
+                                   make_content)
+            panel.pack(fill="both", expand=True, pady=2, padx=5)
+    
+    def _open_path_editor_multi_project(self, line_name, project_list):
+        """Open the path editor dialog showing the same line across multiple projects"""
+        # Collect all database connection info for the projects
+        projects_info = []
+        for project_name in project_list:
+            if project_name not in self.app.pages[0].db_info:
+                continue
+            
+            db_info = self.app.pages[0].db_info[project_name]
+            projects_info.append({
+                'name': project_name,
+                'driver': get_available_sql_driver(),
+                'encrypt': "Encrypt=no;" if "18" in get_available_sql_driver() else "",
+                'db_type': db_info['type'],
+                'db_path': db_info['path'],
+                'server': db_info['server'],
+                'directory': db_info.get('directory', '')
+            })
+        
+        if not projects_info:
+            messagebox.showerror("Error", "No valid project database info found")
+            return
+        
+        PathEditorDialog(self, line_name, projects_info)
     
     def _apply_filter(self):
         filter_text = self.filter_var.get().lower()
+        
         if not filter_text:
             filtered = self.all_results
         else:
@@ -282,8 +420,15 @@ class ResultsPage(ttk.Frame):
                 if filename_match or project_match:
                     filtered[filename] = projects
         
-        self.count_var.set(f"Showing {len(filtered)} of {len(self.all_results)} files")
-        self._render_results(filtered)
+        # Update count and render based on view mode
+        if self.view_mode.get() == "line":
+            self.count_var.set(f"Showing {len(filtered)} of {len(self.all_results)} duplicate files")
+            self._render_results_by_line(filtered)
+        else:
+            # Count projects that have duplicates
+            project_count = len(set(proj for projects in filtered.values() for proj in projects))
+            self.count_var.set(f"Showing {project_count} projects with {len(filtered)} duplicate files")
+            self._render_results_by_project(filtered)
 
 
 class Application(tk.Tk):
@@ -408,20 +553,26 @@ class Application(tk.Tk):
                 conn = self._connect_db(driver, encrypt, db_type, db_path, server, info['directory'])
                 if conn:
                     cursor = conn.cursor()
+                    
+                    # Query seismic files - use LineName as the unique identifier for comparison
                     cursor.execute("""
-                        SELECT LineName, OwnerID, RowChangedDate
-                        FROM dbo.SeismicLine
-                        WHERE LineName IS NOT NULL AND Active = 1
+                        SELECT DISTINCT LineName, FileName, RowChangedDate
+                        FROM dbo.SeismicFile
+                        WHERE LineName IS NOT NULL AND LineName != ''
                     """)
                     
                     for row in cursor.fetchall():
-                        line_name = row[0]
+                        line_name = row[0]  # LineName is the unique identifier
+                        file_path = row[1]  # FileName is the actual file path
+                        last_changed = row[2]
+                        
+                        # Use LineName as the key for comparison
                         file_to_projects[line_name].append(proj_name)
                         if line_name not in line_details:
                             line_details[line_name] = {
                                 'Line Name': line_name,
-                                'Owner ID': row[1],
-                                'Last Changed': str(row[2]) if row[2] else 'N/A'
+                                'File Path': file_path if file_path else 'N/A',
+                                'Last Changed': str(last_changed) if last_changed else 'N/A'
                             }
                     conn.close()
                 else:
